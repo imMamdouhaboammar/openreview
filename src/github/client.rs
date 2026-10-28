@@ -1,3 +1,4 @@
+use crate::branding::format_pr_comment;
 use crate::error::{AppError, Result};
 use crate::github::types::{BranchProtection, PullRequest, PushAccessResult, Repository};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
@@ -204,6 +205,8 @@ impl GitHubClient {
         pr_number: u64,
         body: &str,
     ) -> Result<()> {
+        let formatted = format_pr_comment(body)
+            .ok_or_else(|| AppError::GitHubApi("Cannot post an empty PR comment".into()))?;
         let url = format!(
             "{}/repos/{owner}/{repo}/issues/{pr_number}/comments",
             self.base_url
@@ -211,7 +214,7 @@ impl GitHubClient {
         let resp = self
             .client
             .post(&url)
-            .json(&json!({ "body": body }))
+            .json(&json!({ "body": formatted }))
             .send()
             .await
             .map_err(|e| AppError::GitHubApi(format!("Failed to post PR comment: {e}")))?;

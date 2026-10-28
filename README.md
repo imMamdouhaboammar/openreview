@@ -1,6 +1,12 @@
-# OpenReview
+<p align="center">
+  <img src="assets/openreview-mark.svg" alt="OpenReview logo" width="88" height="88" />
+</p>
 
-A high-performance, vendor-neutral Rust microservice and autonomous AI Code Review & Fix Agent. OpenReview connects to GitHub as a GitHub App or CLI tool, providing evidence-based pull request code reviews and autonomous, verified code remediation within isolated sandboxes.
+<h1 align="center">OpenReview</h1>
+
+<p align="center"><strong>Review with evidence. Fix with proof.</strong></p>
+
+OpenReview reviews pull requests and repairs explicitly authorized issues in an isolated workspace. It connects to GitHub through a GitHub App or Action and supports multiple AI providers. A Review cannot edit code; a Fix must pass verification before a non-force push.
 
 ```mermaid
 sequenceDiagram
