@@ -36,6 +36,16 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Delegate runner user cgroups through systemd session
+      shell: bash
+      run: |
+        set -euo pipefail
+        uid="$(id -u)"
+        sudo loginctl enable-linger "$(id -un)"
+        sudo systemctl start "user@${uid}.service"
+        echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+        echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+        XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user status >/dev/null
     - name: Provision isolated rootless Docker daemon
       uses: docker/setup-docker-action@v5
       with:

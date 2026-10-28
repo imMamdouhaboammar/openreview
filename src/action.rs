@@ -225,7 +225,13 @@ mod tests {
             .expect("Action metadata must be valid YAML");
         assert_eq!(action["runs"]["using"].as_str(), Some("composite"));
         let steps = action["runs"]["steps"].as_sequence().unwrap();
-        assert_eq!(steps[0]["with"]["rootless"].as_bool(), Some(true));
+        assert!(
+            steps[0]["run"]
+                .as_str()
+                .unwrap()
+                .contains("loginctl enable-linger")
+        );
+        assert_eq!(steps[1]["with"]["rootless"].as_bool(), Some(true));
         assert!(steps.iter().any(|step| {
             step["run"]
                 .as_str()
