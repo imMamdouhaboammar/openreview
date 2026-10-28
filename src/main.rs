@@ -334,6 +334,9 @@ fn validate_isolated_docker_backend(config: &Config) -> Result<()> {
         .args([
             "run",
             "--rm",
+            // Match the actual sandbox's identity: UID 0 in the container
+            // maps to the daemon's unprivileged host user under rootless Docker.
+            "--user=0:0",
             "--network=none",
             "--read-only",
             "--cap-drop=ALL",
