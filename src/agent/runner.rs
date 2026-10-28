@@ -151,7 +151,32 @@ impl<'a> AgentRunner<'a> {
 
             debug!("Executing ReAct agent step {step}/{MAX_STEPS}");
 
-            let response = self.llm.complete(&system_prompt, &messages, &tools).await?;
+            // A Review must have a bounded chance to deliver its findings.
+            // Some models keep calling readFile even after enough evidence has
+            // been gathered. On the final step, stop offering tools and ask
+            // for an explicitly qualified report. Fix is excluded: it must
+            // never be pressured to claim changes were verified or published.
+            let final_review_step = self.mode == WorkflowMode::Review && step == MAX_STEPS;
+            let final_prompt = final_review_step.then(|| {
+                format!(
+                    "{system_prompt}\n\nFINAL REVIEW TURN: The investigation budget is exhausted. \
+                     Do not request any more tools. Summarize only findings supported by \
+                     the evidence already collected. State exactly what remains unverified; \
+                     do not claim full coverage or absence of defects without proof. \
+                     When nothing actionable was verified, say so and describe the limits. \
+                     Provide a short PR-ready review report now."
+                )
+            });
+            let request_tools: &[crate::llm::types::ToolDefinition] =
+                if final_review_step { &[] } else { &tools };
+            let response = self
+                .llm
+                .complete(
+                    final_prompt.as_deref().unwrap_or(&system_prompt),
+                    &messages,
+                    request_tools,
+                )
+                .await?;
             // A provider refusal, truncated completion, or malformed empty result
             // is not a successful Review or Fix, even when HTTP returned 200.
             if response.tool_calls.is_empty()
@@ -180,6 +205,22 @@ impl<'a> AgentRunner<'a> {
                         .await;
                     let truncated = truncate_tool_output(tool_result_str);
                     messages.push(ChatMessage::tool_result(call.id, truncated));
+                }
+
+                // A published Review is a terminal action. Asking the model
+                // for another turn may waste the remaining budget or post a
+                // duplicate report, even though delivery already succeeded.
+                if self.mode == WorkflowMode::Review && replies_count > 0 {
+                    info!("Review report delivered in {step} steps");
+                    return Ok(AgentRunResult {
+                        success: true,
+                        steps_taken: step,
+                        total_input_tokens: total_in,
+                        total_output_tokens: total_out,
+                        replies_posted: replies_count,
+                        termination_reason: AgentTerminationReason::Completed,
+                        error_message: None,
+                    });
                 }
             } else {
                 // LLM concluded turn
@@ -314,6 +355,9 @@ impl<'a> AgentRunner<'a> {
             }
             "reply" => {
                 let body = call.arguments["body"].as_str().unwrap_or_default();
+                if body.trim().is_empty() {
+                    return "Cannot post an empty review report".into();
+                }
                 let mut formatted = body.to_string();
                 if !formatted.contains("Powered by [OpenReview]") {
                     formatted.push_str("\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*");

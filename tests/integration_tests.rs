@@ -748,6 +748,181 @@ async fn test_agent_step_limit_exceeded() {
     assert!(result.error_message.unwrap().contains("20 steps"));
 }
 
+/// A Review may spend its entire tool budget exploring a PR. The last turn
+/// must ask for a bounded, evidence-qualified report instead of offering more
+/// tools and silently reaching the step limit.
+#[tokio::test]
+async fn review_uses_final_step_for_evidence_qualified_report() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct BudgetAwareLlm {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for BudgetAwareLlm {
+        async fn complete(
+            &self,
+            system: &str,
+            _messages: &[ChatMessage],
+            tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 20 {
+                assert!(tools.is_empty(), "final Review step must not offer tools");
+                assert!(system.contains("unverified"));
+                Ok(LlmResponse {
+                    content: Some("Review incomplete: areas not checked remain unverified.".into()),
+                    tool_calls: vec![],
+                    input_tokens: 10,
+                    output_tokens: 20,
+                })
+            } else {
+                assert!(!tools.is_empty());
+                Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: format!("read-{call}"),
+                        name: "readFile".into(),
+                        arguments: json!({"path": "src/lib.rs"}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 5,
+                    output_tokens: 5,
+                })
+            }
+        }
+
+        fn model_name(&self) -> &str {
+            "budget-aware-mock"
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    sandbox
+        .write_file("src/lib.rs", "pub fn sum() {}\n")
+        .await
+        .unwrap();
+    let llm = BudgetAwareLlm {
+        calls: AtomicUsize::new(0),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 20);
+    assert_eq!(result.replies_posted, 1);
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 20);
+}
+
+#[tokio::test]
+async fn review_stops_after_a_successfully_published_reply() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReplyOnceLlm(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ReplyOnceLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(call, 0, "review should stop once its report is delivered");
+            Ok(LlmResponse {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "reply-1".into(),
+                    name: "reply".into(),
+                    arguments: json!({"body": "P2: Missing validation in src/lib.rs:5"}),
+                    thought_signature: None,
+                }],
+                input_tokens: 10,
+                output_tokens: 12,
+            })
+        }
+
+        fn model_name(&self) -> &str {
+            "reply-once-mock"
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = ReplyOnceLlm(AtomicUsize::new(0));
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 1);
+    assert_eq!(result.replies_posted, 1);
+    assert_eq!(llm.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn empty_reply_tool_does_not_count_as_a_delivered_review() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = MockLlm::new(vec![
+        LlmResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "empty-reply".into(),
+                name: "reply".into(),
+                arguments: json!({"body": " \n "}),
+                thought_signature: None,
+            }],
+            input_tokens: 1,
+            output_tokens: 1,
+        },
+        LlmResponse {
+            content: Some("No verified findings in the inspected diff.".into()),
+            tool_calls: vec![],
+            input_tokens: 2,
+            output_tokens: 2,
+        },
+    ]);
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 2);
+    assert_eq!(result.replies_posted, 1);
+}
+
 #[test]
 fn test_permission_authorization_model() {
     assert!(is_permission_authorized_for_fix("admin"));
