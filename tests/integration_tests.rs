@@ -853,6 +853,7 @@ async fn test_pr_context_formatting() {
         diff: "diff --git a/src/lib.rs b/src/lib.rs\n+ safe_code();".to_string(),
         changed_files: vec![openreview::github::types::ChangedFile {
             filename: "src/lib.rs".to_string(),
+            previous_filename: None,
             status: "modified".to_string(),
             additions: 1,
             deletions: 0,
