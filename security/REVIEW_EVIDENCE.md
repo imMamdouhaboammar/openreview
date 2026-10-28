@@ -31,13 +31,13 @@ Exact pattern-based secret scan:
 rg -l '(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,}|-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----)' src tests .github README.md Dockerfile docker-compose.yml .env.example
 ```
 
-**Independent CI:** [GitHub Actions run 40676759171](https://github.com/imMamdouhaboammar/openreview/actions/runs/40676759171)
-passed on the previous head `ca02ada`: Rust formatting, Clippy, all
-tests, release build, RustSec audit, service Docker build, sandbox Docker build,
-Compose static configuration validation, and rootless-smoke-script syntax.
-The next head containing the registration-URL generator requires its own CI.
-None of these runs tests the sandbox inside a real rootless Docker daemon or
-verifies a live GitHub App installation.
+**Independent CI:** [GitHub Actions run 40678516258](https://github.com/imMamdouhaboammar/openreview/actions/runs/40678516258)
+passed on `468c1ce`: Rust formatting, Clippy, all tests, release build, RustSec
+audit, service Docker build, **actual execution of the built image's GitHub
+App registration CLI**, sandbox Docker build, Compose static validation, and
+rootless-smoke-script syntax. The next head containing documentation corrections
+requires its own CI. None of these checks executes untrusted code inside a real
+rootless Docker daemon or verifies a live GitHub App installation.
 
 ## Security regressions and actual mitigations
 
@@ -55,7 +55,7 @@ verifies a live GitHub App installation.
 | Public App installation abuse | `server/handlers.rs`, `config.rs` | Signed webhook bearing an installation ID outside operator-approved `ALLOWED_INSTALLATION_IDS` is ignored before job admission; regression test covers an unapproved installation while an approved one still receives jobs |
 | Unicode panic during truncation | `workflow/context.rs`, `workflow/verification.rs` | Multibyte-boundary tests pass |
 | Unsafe or malformed self-hosted App registration links | `github/registration.rs`, `cli.rs` | GitHub-owned prefilled form, HTTPS origin validation, GitHub organization slug validation, no App credentials/registration secrets or untrusted redirects in the link; four regression tests pass. Live GitHub registration not performed |
-| Broken service image at runtime despite successful image build | `Dockerfile`, `.github/workflows/ci.yml` | CI run 40678071221 found a real GLIBC 2.38/2.39 symbol mismatch: unqualified `rust:1-slim` used Debian Trixie while runtime used Bookworm. Builder now uses `rust:1.99-slim-bookworm`; the added CI test executes the built service image and fails if it cannot launch. The corrected image awaits a fresh CI run |
+| Broken service image at runtime despite successful image build | `Dockerfile`, `.github/workflows/ci.yml` | CI run 40678071221 found a real GLIBC 2.38/2.39 symbol mismatch: unqualified `rust:1-slim` used Debian Trixie while runtime used Bookworm. Builder now uses `rust:1.99-slim-bookworm`; CI run 40678516258 successfully launched the corrected container CLI. The CI regression test executes the built service image and fails if it cannot launch |
 
 ## Findings, risk acceptance, and release blockers
 
