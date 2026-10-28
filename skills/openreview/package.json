@@ -1,0 +1,38 @@
+{
+  "name": "openreview",
+  "version": "1.0.0",
+  "description": "Autonomous GitHub PR review bot and coding assistant skill with pluggable sandbox execution and multi-LLM engine.",
+  "type": "module",
+  "main": "bin/cli.js",
+  "bin": {
+    "openreview": "./bin/cli.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "references",
+    "SKILL.md",
+    "marketplace.json",
+    "install.sh"
+  ],
+  "scripts": {
+    "start": "bun bin/cli.js",
+    "test": "bun test"
+  },
+  "keywords": [
+    "agent-skill",
+    "skills.sh",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini",
+    "antigravity",
+    "bun"
+  ],
+  "author": "Mamdouh Aboammar",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=18.0.0"
+  }
+}

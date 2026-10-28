@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/claude-plugin-manifest.json",
+  "name": "openreview",
+  "displayName": "Openreview",
+  "version": "1.0.0",
+  "description": "Autonomous GitHub PR review bot and coding assistant skill with pluggable sandbox execution and multi-LLM engine.",
+  "author": {
+    "name": "Mamdouh Aboammar"
+  },
+  "homepage": "https://skills.sh/openreview",
+  "license": "MIT",
+  "categories": [
+    "automation",
+    "developer-tools",
+    "agent-tools"
+  ],
+  "compatibility": {
+    "claudeCode": ">=1.0.0",
+    "claudeDesktop": ">=1.0.0",
+    "cursor": ">=0.40.0",
+    "codex": ">=0.1.0",
+    "opencode": ">=1.0.0",
+    "antigravity": ">=1.0.0"
+  },
+  "entrypoint": "SKILL.md",
+  "bin": {
+    "openreview": "./bin/cli.js"
+  }
+}

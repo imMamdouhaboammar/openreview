@@ -1,0 +1,14 @@
+{
+  "$schema": "https://skills.sh/schema.json",
+  "name": "openreview",
+  "version": "1.0.0",
+  "description": "Autonomous GitHub PR review bot and coding assistant skill with pluggable sandbox execution and multi-LLM engine.",
+  "author": "Mamdouh Aboammar",
+  "license": "MIT",
+  "skill": "SKILL.md",
+  "tags": [
+    "agent-skill",
+    "automation",
+    "developer-tools"
+  ]
+}
