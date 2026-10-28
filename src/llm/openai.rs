@@ -230,6 +230,7 @@ impl LlmProvider for OpenAiProvider {
                     id,
                     name,
                     arguments,
+                    thought_signature: None,
                 });
             }
         }

@@ -190,6 +190,7 @@ impl LlmProvider for AnthropicProvider {
                             id,
                             name,
                             arguments,
+                            thought_signature: None,
                         });
                     }
                     _ => {}

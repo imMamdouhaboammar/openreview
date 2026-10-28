@@ -65,6 +65,9 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    /// Opaque Gemini thinking metadata: must be echoed on the matching functionCall part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

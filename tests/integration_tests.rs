@@ -516,6 +516,7 @@ async fn test_agent_react_loop_review_mode_blocks_write_file() {
                 "path": "src/main.rs",
                 "content": "fn main() { println!(\"overwritten\"); }"
             }),
+            thought_signature: None,
         }],
         input_tokens: 100,
         output_tokens: 50,
@@ -570,6 +571,7 @@ async fn test_review_mode_rejects_shell_file_and_git_mutation_attempts() {
                 id: format!("forbidden-{i}"),
                 name: "bash".into(),
                 arguments: json!({"command": cmd}),
+                thought_signature: None,
             }],
             input_tokens: 1,
             output_tokens: 1,
@@ -616,6 +618,7 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
                 "path": "src/main.rs",
                 "content": "fn main() {\n    println!(\"hello clean code\");\n}\n"
             }),
+            thought_signature: None,
         }],
         input_tokens: 200,
         output_tokens: 50,
@@ -629,6 +632,7 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
             arguments: json!({
                 "body": "Fixed formatting and replaced code."
             }),
+            thought_signature: None,
         }],
         input_tokens: 250,
         output_tokens: 30,
@@ -712,6 +716,7 @@ async fn test_agent_step_limit_exceeded() {
                 id: format!("call_{i}"),
                 name: "bash".to_string(),
                 arguments: json!({ "command": "echo loop" }),
+                thought_signature: None,
             }],
             input_tokens: 50,
             output_tokens: 20,

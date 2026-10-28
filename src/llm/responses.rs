@@ -154,6 +154,7 @@ impl LlmProvider for OpenAiResponsesProvider {
                         id: id.into(),
                         name: name.into(),
                         arguments,
+                        thought_signature: None,
                     });
                 }
                 _ => {}

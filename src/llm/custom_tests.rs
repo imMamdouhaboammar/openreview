@@ -83,6 +83,7 @@ async fn custom_gemini_uses_native_path_bearer_and_valid_tool_result_role() {
                 id: "call_readFile_0".into(),
                 name: "readFile".into(),
                 arguments: json!({"path":"a.rs"}),
+                thought_signature: None,
             }],
         ),
         ChatMessage::tool_result("call_readFile_0", "ok"),
@@ -90,6 +91,71 @@ async fn custom_gemini_uses_native_path_bearer_and_valid_tool_result_role() {
     let result = provider.complete("", &messages, &[]).await.unwrap();
     assert_eq!(result.content.as_deref(), Some("OK"));
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn gemini_replays_the_exact_thought_signature_on_the_tool_result_turn() {
+    const SIGNATURE: &str = "opaque-gemini-signature-do-not-rewrite";
+    let (first_base, first_server) = mock_once(
+        |_, body| {
+            assert_eq!(body["contents"][0]["parts"][0]["text"], "check the source");
+        },
+        r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"readFile","args":{"path":"src/lib.rs"}},"thoughtSignature":"opaque-gemini-signature-do-not-rewrite"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2}}"#,
+    )
+    .await;
+    let first_provider = GeminiProvider::new("test-key".into(), "gemini-3.8-flash".into())
+        .unwrap()
+        .with_opencode_custom(first_base)
+        .unwrap();
+    let first = first_provider
+        .complete("", &[ChatMessage::user("check the source")], &[])
+        .await
+        .unwrap();
+    first_server.await.unwrap();
+    assert_eq!(first.tool_calls.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&first.tool_calls[0]).unwrap()["thought_signature"],
+        SIGNATURE,
+        "the provider must retain the model's opaque tool-call signature"
+    );
+
+    let (second_base, second_server) = mock_once(
+        |_, body| {
+            assert_eq!(body["contents"][1]["role"], "model");
+            assert_eq!(
+                body["contents"][1]["parts"][0]["thoughtSignature"],
+                "opaque-gemini-signature-do-not-rewrite"
+            );
+            assert_eq!(
+                body["contents"][1]["parts"][0]["functionCall"]["name"],
+                "readFile"
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0]["functionResponse"]["name"],
+                "readFile"
+            );
+        },
+        r#"{"candidates":[{"content":{"parts":[{"text":"Done"}]}}],"usageMetadata":{}}"#,
+    )
+    .await;
+    let second_provider = GeminiProvider::new("test-key".into(), "gemini-3.8-flash".into())
+        .unwrap()
+        .with_opencode_custom(second_base)
+        .unwrap();
+    let second = second_provider
+        .complete(
+            "",
+            &[
+                ChatMessage::user("check the source"),
+                ChatMessage::assistant_with_tools(None, first.tool_calls.clone()),
+                ChatMessage::tool_result(&first.tool_calls[0].id, "source content"),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.content.as_deref(), Some("Done"));
+    second_server.await.unwrap();
 }
 
 #[tokio::test]
@@ -183,6 +249,7 @@ async fn custom_responses_round_trips_function_calls() {
                         id: "call_a".into(),
                         name: "readFile".into(),
                         arguments: json!({"path":"a.rs"}),
+                        thought_signature: None,
                     }],
                 ),
                 ChatMessage::tool_result("call_a", "done"),

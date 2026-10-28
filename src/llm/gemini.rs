@@ -84,12 +84,18 @@ impl LlmProvider for GeminiProvider {
                         parts.push(json!({ "text": msg.content }));
                     }
                     for tc in &msg.tool_calls {
-                        parts.push(json!({
+                        let mut part = json!({
                             "functionCall": {
                                 "name": tc.name,
                                 "args": tc.arguments
                             }
-                        }));
+                        });
+                        // Gemini thinking models require the exact opaque signature
+                        // from each original functionCall part on subsequent turns.
+                        if let Some(signature) = &tc.thought_signature {
+                            part["thoughtSignature"] = json!(signature);
+                        }
+                        parts.push(part);
                     }
                     contents.push(json!({
                         "role": "model",
@@ -192,6 +198,7 @@ impl LlmProvider for GeminiProvider {
                         id,
                         name,
                         arguments,
+                        thought_signature: part["thoughtSignature"].as_str().map(str::to_owned),
                     });
                 }
             }
