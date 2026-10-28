@@ -1,5 +1,8 @@
-# Multi-stage Dockerfile for OpenReview
-FROM rust:1-slim AS builder
+# Multi-stage Dockerfile for OpenReview.
+# Build and runtime must use the same Debian release: the unqualified slim
+# tag currently uses Trixie and emits binaries requiring newer glibc symbols
+# than bookworm-slim provides (caught by the container-execution CI smoke test).
+FROM rust:1.99-slim-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./

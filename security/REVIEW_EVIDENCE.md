@@ -55,6 +55,7 @@ verifies a live GitHub App installation.
 | Public App installation abuse | `server/handlers.rs`, `config.rs` | Signed webhook bearing an installation ID outside operator-approved `ALLOWED_INSTALLATION_IDS` is ignored before job admission; regression test covers an unapproved installation while an approved one still receives jobs |
 | Unicode panic during truncation | `workflow/context.rs`, `workflow/verification.rs` | Multibyte-boundary tests pass |
 | Unsafe or malformed self-hosted App registration links | `github/registration.rs`, `cli.rs` | GitHub-owned prefilled form, HTTPS origin validation, GitHub organization slug validation, no App credentials/registration secrets or untrusted redirects in the link; four regression tests pass. Live GitHub registration not performed |
+| Broken service image at runtime despite successful image build | `Dockerfile`, `.github/workflows/ci.yml` | CI run 40678071221 found a real GLIBC 2.38/2.39 symbol mismatch: unqualified `rust:1-slim` used Debian Trixie while runtime used Bookworm. Builder now uses `rust:1.99-slim-bookworm`; the added CI test executes the built service image and fails if it cannot launch. The corrected image awaits a fresh CI run |
 
 ## Findings, risk acceptance, and release blockers
 
