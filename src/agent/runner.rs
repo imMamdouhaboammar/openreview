@@ -177,6 +177,16 @@ impl<'a> AgentRunner<'a> {
                     request_tools,
                 )
                 .await?;
+            if final_review_step {
+                info!(
+                    tool_calls = response.tool_calls.len(),
+                    has_text = response
+                        .content
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty()),
+                    "Bounded Review final response received"
+                );
+            }
             // A provider refusal, truncated completion, or malformed empty result
             // is not a successful Review or Fix, even when HTTP returned 200.
             if response.tool_calls.is_empty()

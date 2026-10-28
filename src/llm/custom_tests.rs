@@ -55,6 +55,39 @@ fn scoped_header(headers: &str, name: &str, value: &str) {
 }
 
 #[tokio::test]
+async fn gemini_explicitly_disables_function_calls_on_toolless_final_turn() {
+    let (base, server) = mock_once(
+        |_, body| {
+            assert!(body.get("tools").is_none());
+            assert_eq!(
+                body["toolConfig"]["functionCallingConfig"]["mode"],
+                "NONE",
+                "omitting tool schemas alone must not allow another function call"
+            );
+        },
+        r#"{"candidates":[{"content":{"parts":[{"text":"Verified findings summarized."}]}}],"usageMetadata":{}}"#,
+    )
+    .await;
+    let provider = GeminiProvider::new("test-key".into(), "gemini-3.8-flash".into())
+        .unwrap()
+        .with_opencode_custom(base)
+        .unwrap();
+    let response = provider
+        .complete(
+            "Finalize a bounded review now",
+            &[ChatMessage::user("Summarize")],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.content.as_deref(),
+        Some("Verified findings summarized.")
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn custom_gemini_uses_native_path_bearer_and_valid_tool_result_role() {
     let (base, server) = mock_once(
         |headers, body| {

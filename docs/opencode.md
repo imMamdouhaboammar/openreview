@@ -69,6 +69,10 @@ The `gemini` adapter sends tool results as Google `functionResponse` parts,
 groups parallel responses into one `role: user` content, and replays the
 opaque `thoughtSignature` attached to each model function-call part. These
 details are required by Gemini thinking models in multi-step tool workflows.
+When a Review reaches its last permitted inference turn, OpenReview requests
+a qualified text report with no available tools and sets Gemini's
+`toolConfig.functionCallingConfig.mode` to `NONE`. The report must distinguish
+verified findings from unverified areas; no extra tool call is authorized.
 The custom `responses` adapter handles OpenAI `function_call` and
 `function_call_output` items.
 

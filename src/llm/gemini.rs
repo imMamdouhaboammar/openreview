@@ -167,6 +167,14 @@ impl LlmProvider for GeminiProvider {
                 })
                 .collect();
             body["tools"] = json!([{ "functionDeclarations": decls }]);
+        } else {
+            // Omitting function declarations does not reliably terminate
+            // native Gemini tool loops when prior turns contain functionCall
+            // parts. The caller explicitly supplied no available tools (as
+            // on a bounded Review's final turn): prohibit new calls.
+            body["toolConfig"] = json!({
+                "functionCallingConfig": { "mode": "NONE" }
+            });
         }
 
         debug!("Dispatching Google Gemini completion request");
