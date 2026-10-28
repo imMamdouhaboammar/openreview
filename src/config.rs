@@ -96,10 +96,19 @@ impl Config {
         let job_api_token = env::var("JOB_API_TOKEN")
             .ok()
             .filter(|v| !v.trim().is_empty());
-        let max_concurrent_jobs = env::var("MAX_CONCURRENT_JOBS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10);
+        let max_concurrent_jobs = match env::var("MAX_CONCURRENT_JOBS") {
+            Ok(value) => value.parse::<usize>().map_err(|_| {
+                AppError::Config(
+                    "MAX_CONCURRENT_JOBS must be a positive integer between 1 and 100".into(),
+                )
+            })?,
+            Err(env::VarError::NotPresent) => 10,
+            Err(err) => {
+                return Err(AppError::Config(format!(
+                    "MAX_CONCURRENT_JOBS cannot be read: {err}"
+                )));
+            }
+        };
         let sandbox_workspace_dir = env::var("SANDBOX_WORKSPACE_DIR")
             .unwrap_or_else(|_| "/srv/openreview/workspaces".into());
 

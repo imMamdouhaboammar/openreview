@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::github::GitHubClient;
 use crate::github::types::ChangedFile;
 use serde::{Deserialize, Serialize};
@@ -26,10 +26,6 @@ impl PullRequestContext {
         pr_number: u64,
     ) -> Result<Self> {
         let pr = gh_client.get_pull_request(owner, repo, pr_number).await?;
-        let diff = gh_client
-            .get_pull_request_diff(owner, repo, pr_number)
-            .await?;
-
         let changed_files = gh_client
             .get_pull_request_files(owner, repo, pr_number)
             .await?;
@@ -41,6 +37,17 @@ impl PullRequestContext {
                 "PR file count differs from GitHub metadata; refusing partial diff context".into(),
             ));
         }
+        // GitHub's aggregate diff endpoint can reject very large PRs while
+        // the paginated file patches are still available. Never silently
+        // proceed with an incomplete changed-file set or missing patch.
+        let diff = match gh_client.get_pull_request_diff(owner, repo, pr_number).await {
+            Ok(diff) => diff,
+            Err(original_error) => reconstruct_diff_from_patches(&changed_files).map_err(|_| {
+                AppError::Workflow(format!(
+                    "GitHub aggregate PR diff failed ({original_error}) and changed-file patches were incomplete"
+                ))
+            })?,
+        };
         let latest_pr = gh_client.get_pull_request(owner, repo, pr_number).await?;
         if latest_pr.head.sha != pr.head.sha {
             return Err(crate::error::AppError::Workflow(
@@ -130,9 +137,85 @@ impl PullRequestContext {
     }
 }
 
+fn reconstruct_diff_from_patches(files: &[ChangedFile]) -> Result<String> {
+    let mut diff = String::new();
+    for file in files {
+        let patch = file
+            .patch
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Workflow(format!("Missing patch for changed file {}", file.filename))
+            })?;
+        let previous = match file.status.as_str() {
+            "renamed" | "copied" => file.previous_filename.as_deref().ok_or_else(|| {
+                AppError::Workflow(format!("Missing original filename for {}", file.filename))
+            })?,
+            _ => &file.filename,
+        };
+        let old_label = if file.status == "added" {
+            "/dev/null".to_string()
+        } else {
+            format!("a/{previous}")
+        };
+        let new_label = if file.status == "removed" {
+            "/dev/null".to_string()
+        } else {
+            format!("b/{}", file.filename)
+        };
+        diff.push_str(&format!(
+            "diff --git a/{previous} b/{}\n--- {old_label}\n+++ {new_label}\n{patch}\n",
+            file.filename
+        ));
+    }
+    Ok(diff)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconstructs_a_complete_renamed_and_deleted_file_diff() {
+        let files = vec![
+            ChangedFile {
+                filename: "new.rs".into(),
+                previous_filename: Some("old.rs".into()),
+                status: "renamed".into(),
+                additions: 1,
+                deletions: 1,
+                changes: 2,
+                patch: Some("@@ -1 +1 @@\n-old\n+new".into()),
+            },
+            ChangedFile {
+                filename: "gone.rs".into(),
+                previous_filename: None,
+                status: "removed".into(),
+                additions: 0,
+                deletions: 1,
+                changes: 1,
+                patch: Some("@@ -1 +0,0 @@\n-gone".into()),
+            },
+        ];
+        let diff = reconstruct_diff_from_patches(&files).unwrap();
+        assert!(diff.contains("diff --git a/old.rs b/new.rs"));
+        assert!(diff.contains("+++ b/new.rs"));
+        assert!(diff.contains("--- a/gone.rs\n+++ /dev/null"));
+    }
+
+    #[test]
+    fn incomplete_file_patches_must_not_be_misreported_as_full_diff() {
+        let files = vec![ChangedFile {
+            filename: "missing.rs".into(),
+            previous_filename: None,
+            status: "modified".into(),
+            additions: 3,
+            deletions: 1,
+            changes: 4,
+            patch: None,
+        }];
+        assert!(reconstruct_diff_from_patches(&files).is_err());
+    }
 
     #[test]
     fn prompt_context_multibyte_diff_boundary() {

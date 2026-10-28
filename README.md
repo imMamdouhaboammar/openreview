@@ -49,7 +49,7 @@ sequenceDiagram
 ### Capability B — Autonomous Code Fixing (Verified Remediation)
 * **Explicit Autonomous Fixing:** Triggered via `@openreview fix` or `@openreview fix <instructions>`.
 * **Collaborator Authorization Required:** Evaluates the requesting user's GitHub repository permissions. Only users with `write`, `maintain`, or `admin` access can initiate Fix workflows. Unauthorized requests are rejected.
-* **Pre-Publish Verification Gate:** Attempts a detected test suite (Cargo, Bun, NPM, Go, Pytest) inside the sandbox. Failures, missing executables, missing tests, and incomplete verification block publication. The sandbox image includes Cargo, npm, Go, and Pytest; Bun requires an operator-provided image.
+* **Pre-Publish Verification Gate:** Attempts a detected test command (Cargo, Bun, NPM, Go, Pytest) inside the sandbox. A missing framework, unavailable executable, failed command or incomplete run blocks publication. A zero exit status alone is insufficient: standard runner output must also report evidence of at least one executed test (for Go, a successful tested package). **Limitation:** Test output can be forged by repository code and this is not a coverage guarantee; teams requiring minimum coverage or trusted CI must enforce them separately. The sandbox image includes Cargo, npm, Go, and Pytest; Bun requires an operator-provided image.
 * **Attributable Commits:** Verified fixes are committed and pushed to the PR branch with an audit trail linking the commit to the requesting actor.
 
 ---
@@ -176,6 +176,8 @@ MAX_CONCURRENT_JOBS=10
      ./scripts/verify-rootless-sandbox.sh
    docker compose up -d
    ```
+
+   Run the smoke test **as the same unprivileged user that owns the rootless Docker daemon** (UID 10001 in this example), not as host root. Its temporary workspace is mode 0700, and the container's user namespace must map to that owner to verify real read/write behavior.
 
    The rootless security smoke test must pass on the **actual Docker host** before serving untrusted jobs. It exercises read-only Review mounts, writable Fix mounts, effective resource limits, disabled networking, absence of injected App tokens and cleanup. Passing this script does not replace real GitHub App permissions and Fix publication integration tests.
 

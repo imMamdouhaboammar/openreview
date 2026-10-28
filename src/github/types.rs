@@ -154,6 +154,8 @@ pub struct CollaboratorPermissionResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChangedFile {
     pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
     pub status: String,
     #[serde(default)]
     pub additions: usize,

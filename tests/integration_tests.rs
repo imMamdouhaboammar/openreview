@@ -53,6 +53,17 @@ fn create_test_config() -> Config {
 }
 
 #[test]
+fn explicit_invalid_job_concurrency_is_not_silently_defaulted() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .arg("verify-config")
+        .env("MAX_CONCURRENT_JOBS", "not-a-number")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "invalid limit must fail startup");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("MAX_CONCURRENT_JOBS"));
+}
+
+#[test]
 fn actions_runner_rejects_missing_github_token_before_running_agent() {
     let temp = tempfile::tempdir().unwrap();
     let event_path = temp.path().join("event.json");
