@@ -1,0 +1,26 @@
+feature,area,priority,original,clone,notes
+webhook_hmac_verification,security,must,yes,yes,Constant-time HMAC-SHA256 verification of X-Hub-Signature-256
+github_app_jwt_auth,auth,must,yes,yes,RS256 JWT minting to acquire installation tokens
+push_access_verification,security,must,yes,yes,Inspect repo archived state and branch protection rules
+ephemeral_sandbox_local,execution,must,no,yes,Fast local temporary directory sandbox with process isolation
+ephemeral_sandbox_docker,execution,should,no,yes,Rootless Docker/Podman container sandbox for multi-tenant isolation
+vercel_sandbox_support,execution,could,yes,no,Proprietary closed cloud Vercel Sandbox replaced with open drivers
+git_shallow_clone,git,must,yes,yes,Clone PR branch with depth 1 using authenticated installation token
+package_manager_detect,execution,must,yes,yes,Auto-detect bun pnpm yarn npm cargo and go
+git_credential_config,git,must,yes,yes,Configures committer identity and core.hooksPath=/dev/null
+progressive_skill_discovery,skills,must,yes,yes,Scans .agents/skills/ and parses YAML frontmatter
+progressive_skill_load,skills,must,yes,yes,Dynamic loadSkill tool to keep prompt context focused
+react_agent_loop,agent,must,yes,yes,Durable ReAct loop with max steps and token budget controls
+tool_bash_execution,tools,must,yes,yes,Execute commands with 10k character truncation guard
+tool_read_file,tools,must,yes,yes,Read file contents from sandbox workspace
+tool_write_file,tools,must,yes,yes,Write or update file contents in sandbox workspace
+tool_load_skill,tools,must,yes,yes,Retrieve full instructions of a discovered skill
+tool_reply,tools,must,yes,yes,Post markdown comments and line suggestions on GitHub PR
+multi_provider_llm,llm,must,no,yes,Supports Anthropic Claude OpenAI DeepSeek and Gemini
+reaction_commit_trigger,reactions,must,yes,yes,Triggers commit apply workflow on thumbs-up or heart
+reaction_skip_ack,reactions,must,yes,yes,Acknowledges skip on thumbs-down or confused
+auto_diff_commit_push,git,must,yes,yes,Commits uncommitted changes and pushes to PR branch
+standalone_cli_mode,cli,must,no,yes,CLI binary for local reviews and CI/CD pipelines
+health_and_metrics,observability,must,no,yes,HTTP /health and /metrics endpoint for monitoring
+redis_and_memory_state,state,must,yes,yes,Durable thread and deduplication state via In-Memory or Redis
+web_landing_status,web,should,yes,yes,Embedded status and documentation web interface
