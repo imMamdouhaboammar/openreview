@@ -41,6 +41,13 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build service image
         run: docker build -f Dockerfile -t openreview-service:ci .
+      - name: Verify registration URL from the built container
+        run: |
+          registration_url=$(docker run --rm openreview-service:ci github-app-url --domain https://review.example.org --name "OpenReview CI")
+          case "$registration_url" in
+            https://github.com/settings/apps/new\?*webhook_url=https%3A%2F%2Freview.example.org%2Fapi%2Fwebhooks%2Fgithub*) ;;
+            *) echo "Container registration URL did not prefill the expected HTTPS webhook" >&2; exit 1 ;;
+          esac
       - name: Build sandbox image
         run: docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
       - name: Validate Compose interpolation and structure

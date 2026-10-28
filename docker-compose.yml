@@ -1,5 +1,7 @@
 services:
   openreview:
+    # Reuse the image built for `github-app-url` during initial registration.
+    image: openreview-service:local
     build:
       context: .
       dockerfile: Dockerfile
