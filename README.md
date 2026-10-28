@@ -124,13 +124,17 @@ GITHUB_APP_ID=123456
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=your_hmac_webhook_secret
 
-# LLM Engine ("anthropic" | "openai" | "openrouter" | "opencode" | "opencode_go" | "gemini" | "ollama")
+# LLM Engine ("anthropic" | "openai" | "openrouter" | "opencode" | "opencode_go" | "opencode_custom" | "gemini" | "ollama")
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-3-7-sonnet-20250219
 ANTHROPIC_API_KEY=sk-ant-...
 # For OpenRouter set LLM_PROVIDER=openrouter, LLM_MODEL=provider/model, OPENROUTER_API_KEY=...
 # For OpenCode Console set LLM_PROVIDER=opencode, LLM_MODEL=<model>, OPENCODE_API_KEY=...
 # For OpenCode Go set LLM_PROVIDER=opencode_go, LLM_MODEL=<Go-plan-model>, OPENCODE_API_KEY=...
+# For any OpenCode Custom Provider set LLM_PROVIDER=opencode_custom,
+# LLM_MODEL=<enabled-model>, OPENCODE_CUSTOM_URL=<Console connection URL>,
+# OPENCODE_CUSTOM_PROTOCOL=<chat|responses|anthropic|gemini>, OPENCODE_API_KEY=...
+# Details: docs/opencode.md
 
 # Secure webhook execution requires an isolated rootless Docker engine
 SANDBOX_DRIVER=docker
@@ -220,7 +224,10 @@ This alternative runs the **same Rust Review and authorized Fix engine** on a Gi
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter ID such as `openai/gpt-4o-mini` |
 | `opencode` | `OPENCODE_API_KEY` | Accessible **OpenCode Console** Paygo model |
 | `opencode_go` | `OPENCODE_API_KEY` | Accessible **OpenCode Go** plan model |
+| `opencode_custom` | `OPENCODE_API_KEY` plus connection URL and protocol | Model enabled on your **OpenCode Custom Provider** |
 | `gemini` | `GEMINI_API_KEY` | Gemini model ID |
+
+For step-by-step setup, protocol selection, security rules and a GitHub Action example, see **[Using OpenCode and Custom Providers](docs/opencode.md)**.
 
 OpenCode Console is an **inference provider** here, not a separate invocation of the OpenCode CLI agent. OpenCode's free-tier models may only be accessible from the official OpenCode CLI, not a third-party client; use an eligible paid/Go model and account. The Go adapter sends a stable `x-opencode-session` value for each agent run. OpenRouter and OpenCode models **must** be configured explicitly: there is no arbitrary default model. Provider APIs, quotas, and model availability can change; try a test PR first.
 

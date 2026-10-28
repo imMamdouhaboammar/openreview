@@ -40,6 +40,8 @@ fn create_test_config() -> Config {
         openai_api_key: None,
         openrouter_api_key: None,
         opencode_api_key: None,
+        opencode_custom_url: None,
+        opencode_custom_protocol: None,
         openai_base_url: None,
         gemini_api_key: None,
         ollama_base_url: None,

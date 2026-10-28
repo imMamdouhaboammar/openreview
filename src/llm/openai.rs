@@ -11,6 +11,7 @@ pub struct OpenAiProvider {
     _api_key: String,
     model: String,
     base_url: String,
+    chat_endpoint: Option<String>,
     session_id: Option<HeaderValue>,
 }
 
@@ -51,8 +52,27 @@ impl OpenAiProvider {
             _api_key: api_key,
             model,
             base_url: url.trim_end_matches('/').to_string(),
+            chat_endpoint: None,
             session_id,
         })
+    }
+
+    /// OpenCode custom connections use /chat/completions without the /v1 prefix.
+    pub fn with_chat_endpoint(mut self, endpoint: String) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self._api_key))
+                .map_err(|error| AppError::Config(error.to_string()))?,
+        );
+        self.client = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.chat_endpoint = Some(endpoint);
+        Ok(self)
     }
 
     fn request(&self, url: &str, body: &Value) -> reqwest::RequestBuilder {
@@ -72,7 +92,10 @@ impl LlmProvider for OpenAiProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = self
+            .chat_endpoint
+            .clone()
+            .unwrap_or_else(|| format!("{}/v1/chat/completions", self.base_url));
 
         let mut oai_messages: Vec<Value> = Vec::new();
         if !system.is_empty() {

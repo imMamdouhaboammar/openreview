@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use crate::llm::traits::LlmProvider;
 use crate::llm::types::{ChatMessage, LlmResponse, MessageRole, ToolCall, ToolDefinition};
 use async_trait::async_trait;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -10,6 +10,7 @@ pub struct GeminiProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    custom_base_url: Option<String>,
 }
 
 impl GeminiProvider {
@@ -26,7 +27,27 @@ impl GeminiProvider {
             client,
             api_key,
             model,
+            custom_base_url: None,
         })
+    }
+
+    /// OpenCode's custom gateway takes a bearer key and a native Gemini path,
+    /// never a Google API key in the request URL.
+    pub fn with_opencode_custom(mut self, base_url: String) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .map_err(|error| AppError::Config(error.to_string()))?,
+        );
+        self.client = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.custom_base_url = Some(base_url);
+        Ok(self)
     }
 }
 
@@ -38,10 +59,14 @@ impl LlmProvider for GeminiProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
-        );
+        let url = if let Some(base) = &self.custom_base_url {
+            format!("{base}/models/{}:generateContent", self.model)
+        } else {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                self.model, self.api_key
+            )
+        };
 
         let mut contents: Vec<Value> = Vec::new();
 
@@ -72,11 +97,25 @@ impl LlmProvider for GeminiProvider {
                     }));
                 }
                 MessageRole::Tool => {
+                    let function_name = msg
+                        .tool_call_id
+                        .as_deref()
+                        .and_then(|call_id| {
+                            messages
+                                .iter()
+                                .rev()
+                                .flat_map(|previous| previous.tool_calls.iter())
+                                .find(|call| call.id == call_id)
+                        })
+                        .map(|call| call.name.as_str())
+                        .unwrap_or("tool_result");
+                    // Gemini requires a user role for function responses, with
+                    // the original function name (not the opaque tool-call ID).
                     contents.push(json!({
-                        "role": "function",
+                        "role": "user",
                         "parts": [{
                             "functionResponse": {
-                                "name": msg.tool_call_id.clone().unwrap_or_else(|| "tool_result".to_string()),
+                                "name": function_name,
                                 "response": { "output": msg.content }
                             }
                         }]

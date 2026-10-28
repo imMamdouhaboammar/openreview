@@ -54,3 +54,9 @@ jobs:
           # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
           # provider: opencode_go
           # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          # For a custom OpenCode connection (see docs/opencode.md):
+          # provider: opencode_custom
+          # model: gemini-3.8-flash
+          # opencode_custom_url: https://opencode.ai/inference/custom/conn_REPLACEID
+          # opencode_custom_protocol: gemini
+          # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}

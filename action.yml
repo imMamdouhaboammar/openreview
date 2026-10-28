@@ -5,7 +5,7 @@ branding:
   color: blue
 inputs:
   provider:
-    description: anthropic, openai, openrouter, opencode, opencode_go, gemini, or ollama
+    description: anthropic, openai, openrouter, opencode, opencode_go, opencode_custom, gemini, or ollama
     required: true
   model:
     description: Exact model identifier provided by the selected AI service
@@ -28,7 +28,13 @@ inputs:
     description: OpenRouter key supplied from Actions Secrets
     required: false
   opencode_api_key:
-    description: OpenCode Console or Go key supplied from Actions Secrets
+    description: OpenCode Console, Go, or Custom key supplied from Actions Secrets
+    required: false
+  opencode_custom_url:
+    description: OpenCode Console connection URL (https://opencode.ai/inference/custom/conn_...)
+    required: false
+  opencode_custom_protocol:
+    description: Custom connection protocol (chat, responses, anthropic, or gemini)
     required: false
   gemini_api_key:
     description: Gemini key supplied from Actions Secrets
@@ -84,6 +90,8 @@ runs:
         OPENAI_API_KEY: ${{ inputs.openai_api_key }}
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
+        OPENCODE_CUSTOM_URL: ${{ inputs.opencode_custom_url }}
+        OPENCODE_CUSTOM_PROTOCOL: ${{ inputs.opencode_custom_protocol }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
       run: |
         set -euo pipefail

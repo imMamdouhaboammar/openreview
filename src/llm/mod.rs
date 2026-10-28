@@ -1,12 +1,14 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod openai;
+pub mod responses;
 pub mod traits;
 pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
+pub use responses::OpenAiResponsesProvider;
 pub use traits::LlmProvider;
 pub use types::*;
 
@@ -69,6 +71,39 @@ pub fn create_llm_provider(config: &Config) -> Result<Box<dyn LlmProvider>> {
                 Some(base.into()),
             )?))
         }
+        "opencode_custom" => {
+            config.validate_llm_credentials()?;
+            let key = config.opencode_api_key.clone().expect("validated above");
+            let base = config.validated_opencode_custom_url()?;
+            let model = config.model_name.clone();
+            let provider: Box<dyn LlmProvider> = match config.opencode_custom_protocol.as_deref() {
+                Some("chat") => Box::new(
+                    OpenAiProvider::new(key, model, Some(base.clone()))?
+                        .with_chat_endpoint(format!("{base}/chat/completions"))?,
+                ),
+                Some("responses") => Box::new(OpenAiResponsesProvider::new(
+                    key,
+                    model,
+                    format!("{base}/responses"),
+                )?),
+                Some("anthropic") => {
+                    Box::new(AnthropicProvider::new(key, model)?.with_opencode_custom(base)?)
+                }
+                Some("gemini") => {
+                    if !model.bytes().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_' | b'.')
+                    }) {
+                        return Err(AppError::Config(
+                            "Gemini model ID must contain only letters, digits, '.', '-', '_'"
+                                .into(),
+                        ));
+                    }
+                    Box::new(GeminiProvider::new(key, model)?.with_opencode_custom(base)?)
+                }
+                _ => unreachable!("custom protocol validated above"),
+            };
+            Ok(provider)
+        }
         "gemini" => {
             let key = config.gemini_api_key.clone().ok_or_else(|| {
                 AppError::Config("GEMINI_API_KEY is required for Gemini provider".to_string())
@@ -90,10 +125,13 @@ pub fn create_llm_provider(config: &Config) -> Result<Box<dyn LlmProvider>> {
             )?))
         }
         other => Err(AppError::Config(format!(
-            "Unsupported LLM provider '{other}'. Supported: anthropic, openai, openrouter, opencode, opencode_go, gemini, ollama"
+            "Unsupported LLM provider '{other}'. Supported: anthropic, openai, openrouter, opencode, opencode_go, opencode_custom, gemini, ollama"
         ))),
     }
 }
+
+#[cfg(test)]
+mod custom_tests;
 
 #[cfg(test)]
 mod tests {
@@ -113,6 +151,8 @@ mod tests {
             openai_api_key: None,
             openrouter_api_key: None,
             opencode_api_key: None,
+            opencode_custom_url: None,
+            opencode_custom_protocol: None,
             openai_base_url: None,
             gemini_api_key: None,
             ollama_base_url: None,
@@ -176,6 +216,78 @@ mod tests {
             config.opencode_api_key = Some("an-opencode-test-key".into());
             let provider = create_llm_provider(&config).expect("OpenCode key should be accepted");
             assert_eq!(provider.model_name(), "test-model");
+        }
+    }
+
+    #[test]
+    fn custom_opencode_requires_a_connection_url_even_with_valid_key() {
+        let mut config = config_for("opencode_custom");
+        config.opencode_api_key = Some("test-opencode-key".into());
+        let error = config.validate_llm_credentials().unwrap_err();
+        assert!(
+            error.to_string().contains("OPENCODE_CUSTOM_URL"),
+            "custom connection must not accept a missing URL: {error}"
+        );
+    }
+
+    #[test]
+    fn custom_opencode_does_not_fall_back_to_another_provider_key() {
+        let mut config = config_for("opencode_custom");
+        config.openai_api_key = Some("unrelated-openai-key".into());
+        let error = config.validate_llm_credentials().unwrap_err();
+        assert!(
+            error.to_string().contains("OPENCODE_API_KEY"),
+            "custom OpenCode must use its own scoped token: {error}"
+        );
+    }
+
+    #[test]
+    fn custom_opencode_model_uses_its_own_connection() {
+        for protocol in ["chat", "responses", "anthropic", "gemini"] {
+            let mut config = config_for("opencode_custom");
+            config.opencode_api_key = Some("a-scoped-opencode-key".into());
+            config.opencode_custom_url =
+                Some("https://opencode.ai/inference/custom/conn_ABC123".into());
+            config.opencode_custom_protocol = Some(protocol.into());
+            let provider = create_llm_provider(&config)
+                .unwrap_or_else(|error| panic!("{protocol} adapter unavailable: {error}"));
+            assert_eq!(provider.model_name(), "test-model");
+        }
+    }
+
+    #[test]
+    fn custom_opencode_rejects_credential_exfiltration_urls() {
+        for unsafe_url in [
+            "http://opencode.ai/inference/custom/conn_ABC",
+            "https://evil.example/inference/custom/conn_ABC",
+            "https://opencode.ai.evil.example/inference/custom/conn_ABC",
+            "https://opencode.ai@evil.example/inference/custom/conn_ABC",
+            "https://opencode.ai/inference/custom/conn_ABC/other",
+            "https://opencode.ai/inference/custom/conn_ABC/",
+            "https://opencode.ai/inference/custom/conn_ABC///",
+            "https://opencode.ai/inference/custom/conn_ABC?redirect=https://evil.example",
+            "https://opencode.ai/inference/custom/conn_ABC%2Fother",
+        ] {
+            let mut config = config_for("opencode_custom");
+            config.opencode_api_key = Some("a-scoped-opencode-key".into());
+            config.opencode_custom_protocol = Some("chat".into());
+            config.opencode_custom_url = Some(unsafe_url.into());
+            assert!(
+                config.validate_llm_credentials().is_err(),
+                "unsafe destination unexpectedly accepted: {unsafe_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_opencode_requires_explicit_valid_protocol() {
+        let mut config = config_for("opencode_custom");
+        config.opencode_api_key = Some("a-scoped-opencode-key".into());
+        config.opencode_custom_url = Some("https://opencode.ai/inference/custom/conn_ABC".into());
+        for invalid in [None, Some("auto"), Some("file"), Some("gemini/../evil")] {
+            config.opencode_custom_protocol = invalid.map(str::to_owned);
+            let error = config.validate_llm_credentials().unwrap_err();
+            assert!(error.to_string().contains("OPENCODE_CUSTOM_PROTOCOL"));
         }
     }
 }

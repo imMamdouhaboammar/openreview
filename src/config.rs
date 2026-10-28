@@ -19,6 +19,8 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub openrouter_api_key: Option<String>,
     pub opencode_api_key: Option<String>,
+    pub opencode_custom_url: Option<String>,
+    pub opencode_custom_protocol: Option<String>,
     pub openai_base_url: Option<String>,
     pub gemini_api_key: Option<String>,
     pub ollama_base_url: Option<String>,
@@ -74,7 +76,7 @@ impl Config {
             "ollama" => "deepseek-r1:latest".to_string(),
             // Aggregators have no single safe default model; require an exact
             // identifier from the customer's own account / subscription.
-            "openrouter" | "opencode" | "opencode_go" => String::new(),
+            "openrouter" | "opencode" | "opencode_go" | "opencode_custom" => String::new(),
             _ => "claude-3-7-sonnet-20250219".to_string(),
         });
 
@@ -82,6 +84,12 @@ impl Config {
         let openai_api_key = env::var("OPENAI_API_KEY").ok();
         let openrouter_api_key = env::var("OPENROUTER_API_KEY").ok();
         let opencode_api_key = env::var("OPENCODE_API_KEY").ok();
+        let opencode_custom_url = env::var("OPENCODE_CUSTOM_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let opencode_custom_protocol = env::var("OPENCODE_CUSTOM_PROTOCOL")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
         let openai_base_url = env::var("OPENAI_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty());
@@ -132,6 +140,8 @@ impl Config {
             openai_api_key,
             openrouter_api_key,
             opencode_api_key,
+            opencode_custom_url,
+            opencode_custom_protocol,
             openai_base_url,
             gemini_api_key,
             ollama_base_url,
@@ -196,7 +206,7 @@ impl Config {
                     ));
                 }
             }
-            "opencode" | "opencode_go" => {
+            "opencode" | "opencode_go" | "opencode_custom" => {
                 if self
                     .opencode_api_key
                     .as_deref()
@@ -207,6 +217,16 @@ impl Config {
                     return Err(AppError::Config(
                         "OPENCODE_API_KEY is required for OpenCode Console provider".to_string(),
                     ));
+                }
+                if self.llm_provider == "opencode_custom" {
+                    self.validated_opencode_custom_url()?;
+                    match self.opencode_custom_protocol.as_deref() {
+                        Some("chat" | "responses" | "anthropic" | "gemini") => {}
+                        _ => return Err(AppError::Config(
+                            "OPENCODE_CUSTOM_PROTOCOL must be chat, responses, anthropic, or gemini"
+                                .into(),
+                        )),
+                    }
                 }
             }
             "gemini" => {
@@ -221,11 +241,43 @@ impl Config {
             }
             other => {
                 return Err(AppError::Config(format!(
-                    "Unsupported LLM provider '{other}'. Supported: anthropic, openai, openrouter, opencode, opencode_go, gemini, ollama"
+                    "Unsupported LLM provider '{other}'. Supported: anthropic, openai, openrouter, opencode, opencode_go, opencode_custom, gemini, ollama"
                 )));
             }
         }
         Ok(())
+    }
+
+    /// Only send OPENCODE_API_KEY to OpenCode's HTTPS connection gateway.
+    /// Never allow an arbitrary URL here: this token can access a user's models and budget.
+    pub fn validated_opencode_custom_url(&self) -> Result<String> {
+        let input = self
+            .opencode_custom_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| AppError::Config("OPENCODE_CUSTOM_URL is required".into()))?;
+        let url = reqwest::Url::parse(input).map_err(|_| {
+            AppError::Config("OPENCODE_CUSTOM_URL must be an OpenCode connection URL".into())
+        })?;
+        let connection = url.path().strip_prefix("/inference/custom/conn_");
+        if url.scheme() != "https"
+            || url.host_str() != Some("opencode.ai")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || connection.is_none_or(|id| {
+                id.is_empty()
+                    || !id
+                        .bytes()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })
+        {
+            return Err(AppError::Config(
+                "OPENCODE_CUSTOM_URL must be https://opencode.ai/inference/custom/conn_<id>".into(),
+            ));
+        }
+        Ok(url.to_string().trim_end_matches('/').to_owned())
     }
 
     pub fn validate_for_serve(&self) -> Result<()> {

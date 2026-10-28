@@ -269,6 +269,33 @@ mod tests {
     }
 
     #[test]
+    fn hosted_action_exposes_scoped_custom_opencode_configuration() {
+        let action: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../action.yml")).unwrap();
+        for input in ["opencode_custom_url", "opencode_custom_protocol"] {
+            assert!(
+                action["inputs"][input].is_mapping(),
+                "missing input: {input}"
+            );
+        }
+        let entrypoint = action["runs"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .last()
+            .unwrap();
+        for variable in ["OPENCODE_CUSTOM_URL", "OPENCODE_CUSTOM_PROTOCOL"] {
+            assert!(
+                entrypoint["env"][variable].is_string(),
+                "missing {variable}"
+            );
+        }
+        assert_eq!(
+            entrypoint["env"]["OPENCODE_API_KEY"].as_str(),
+            Some("${{ inputs.opencode_api_key }}")
+        );
+    }
+
+    #[test]
     fn malformed_pr_commands_fail_closed() {
         let mut event = issue_comment("@openreview fix", "maintainer");
         event["issue"]["number"] = json!(0);
