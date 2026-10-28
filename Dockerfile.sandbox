@@ -1,0 +1,13 @@
+# Build on the isolated, rootless Docker daemon used for untrusted job execution.
+# Keep build/test executables in the job image, not the credential-bearing service.
+FROM rust:1.99-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git bash curl nodejs npm golang-go python3 python3-pytest \
+    && rm -rf /var/lib/apt/lists/*
+
+# DockerSandbox provides a read-only root filesystem, a writable workspace mount,
+# and no network. Project dependencies must be made available through a trusted
+# prebuilt image/cache; absent tools or dependencies block publishing.
+WORKDIR /workspace
+CMD ["sleep", "1800"]

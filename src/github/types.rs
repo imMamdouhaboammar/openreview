@@ -31,6 +31,8 @@ pub struct GitRef {
 pub struct PullRequest {
     pub id: u64,
     pub number: u64,
+    #[serde(default)]
+    pub changed_files: Option<u64>,
     pub title: String,
     pub body: Option<String>,
     pub head: GitRef,

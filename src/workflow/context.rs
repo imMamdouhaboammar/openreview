@@ -28,13 +28,25 @@ impl PullRequestContext {
         let pr = gh_client.get_pull_request(owner, repo, pr_number).await?;
         let diff = gh_client
             .get_pull_request_diff(owner, repo, pr_number)
-            .await
-            .unwrap_or_else(|_| "Diff unavailable via GitHub API".to_string());
+            .await?;
 
         let changed_files = gh_client
             .get_pull_request_files(owner, repo, pr_number)
-            .await
-            .unwrap_or_default();
+            .await?;
+        if pr
+            .changed_files
+            .is_some_and(|n| n != changed_files.len() as u64)
+        {
+            return Err(crate::error::AppError::Workflow(
+                "PR file count differs from GitHub metadata; refusing partial diff context".into(),
+            ));
+        }
+        let latest_pr = gh_client.get_pull_request(owner, repo, pr_number).await?;
+        if latest_pr.head.sha != pr.head.sha {
+            return Err(crate::error::AppError::Workflow(
+                "PR head moved during context retrieval; retry against a stable revision".into(),
+            ));
+        }
 
         let base_repo_name = pr
             .base
@@ -48,7 +60,7 @@ impl PullRequestContext {
             .as_ref()
             .map(|r| r.full_name.clone())
             .unwrap_or_default();
-        let is_fork = !head_repo_name.is_empty() && head_repo_name != base_repo_name;
+        let is_fork = head_repo_name.is_empty() || head_repo_name != base_repo_name;
 
         Ok(Self {
             repo_full_name: format!("{owner}/{repo}"),
@@ -100,10 +112,11 @@ impl PullRequestContext {
         if !self.diff.is_empty() {
             // Include diff capped at a reasonable size to avoid blowing context
             let diff_snippet = if self.diff.len() > 30_000 {
-                format!(
-                    "{}...\n(Diff truncated to 30,000 characters)",
-                    &self.diff[..30_000]
-                )
+                let mut end = 30_000;
+                while !self.diff.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...\n(Diff truncated to 30,000 bytes)", &self.diff[..end])
             } else {
                 self.diff.clone()
             };
@@ -114,5 +127,30 @@ impl PullRequestContext {
         }
 
         section
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_context_multibyte_diff_boundary() {
+        let context = PullRequestContext {
+            repo_full_name: "owner/repo".into(),
+            pr_number: 1,
+            title: "test".into(),
+            description: String::new(),
+            base_branch: "main".into(),
+            base_sha: "base".into(),
+            head_branch: "fix".into(),
+            head_sha: "head".into(),
+            is_fork: false,
+            diff: format!("{}🚀", "x".repeat(29_999)),
+            changed_files: vec![],
+        };
+        let result = context.to_prompt_context();
+        assert!(result.contains("Diff truncated"));
+        assert!(!result.contains('🚀'));
     }
 }

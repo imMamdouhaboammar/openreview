@@ -43,13 +43,13 @@ sequenceDiagram
 ### Capability A — AI Code Review (Read-Only)
 * **On-Demand Precision Review:** Triggered via `@openreview review` or unqualified `@openreview` mentions.
 * **Evidence-Based Findings:** Analyzes authoritative PR diffs for runtime bugs, security vulnerabilities, performance regressions, race conditions, missing validation, and test gaps.
-* **Native Suggestions:** Provides line-referenced findings formatted with GitHub ````suggestion```` markdown blocks.
-* **Strict Read-Only Guarantee:** Review mode has file-writing tools disabled and is strictly prevented from creating commits or modifying remote branches.
+* **Review Suggestions:** Produces line-referenced findings and suggestion Markdown in PR comments. Native inline suggestions are not yet wired into the agent's reply tool.
+* **Read-Only Enforcement:** Review mode exposes file reads and review comments only; arbitrary shell and file-writing tools are not available.
 
 ### Capability B — Autonomous Code Fixing (Verified Remediation)
 * **Explicit Autonomous Fixing:** Triggered via `@openreview fix` or `@openreview fix <instructions>`.
 * **Collaborator Authorization Required:** Evaluates the requesting user's GitHub repository permissions. Only users with `write`, `maintain`, or `admin` access can initiate Fix workflows. Unauthorized requests are rejected.
-* **Pre-Publish Verification Gate:** Runs repository test suites (Cargo, Bun, NPM, Go, Pytest) inside the sandbox before committing. If tests fail, automated publishing is blocked and a diagnostic report is posted to the PR.
+* **Pre-Publish Verification Gate:** Attempts a detected test suite (Cargo, Bun, NPM, Go, Pytest) inside the sandbox. Failures, missing executables, missing tests, and incomplete verification block publication. The sandbox image includes Cargo, npm, Go, and Pytest; Bun requires an operator-provided image.
 * **Attributable Commits:** Verified fixes are committed and pushed to the PR branch with an audit trail linking the commit to the requesting actor.
 
 ---
@@ -66,20 +66,19 @@ OpenReview recognizes commands in PR issue comments and review comment threads:
 | `@openreview fix <task>` | `Fix` | Write / Admin | Applies specific remediation (e.g. `@openreview fix remove unwrap()`). |
 | `@openreview <text>` | `Review` | Read | Unqualified mention defaults safely to read-only Review mode. |
 
-### Reaction-Driven Approvals
-* Reacting with 👍 or ❤️ to an OpenReview proposal by an authorized write collaborator triggers the autonomous Fix workflow to apply and verify the proposed changes.
-* Reacting with 👎 or 😕 acknowledges and cancels the proposal without making repository modifications.
+### Fix Approval
+An authorized collaborator approves a proposed change by leaving an explicit `@openreview fix <instructions>` comment. GitHub Apps do not receive a `reaction` webhook event; reacting with an emoji does **not** initiate or cancel a workflow. Reaction polling and proposal-specific approvals are not implemented.
 
 ---
 
 ## Security Architecture & Sandbox Isolation
 
-1. **Application-Level Mode Enforcement:** Tool availability is controlled by the application, not LLM prompts. `writeFile` is completely excluded from Review mode.
-2. **Secret Sanitization:** The execution environment strips all host credentials (`GITHUB_APP_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.) before executing commands.
-3. **Git Credential Isolation:** The Git remote origin URL is sanitized immediately after cloning (`https://github.com/owner/repo.git`). Access tokens are never stored in `.git/config` where sandbox scripts could read them.
-4. **Path Traversal Protection:** All file operations enforce canonical path resolution, strictly blocking directory traversal (`..`) and symlink escapes outside the workspace.
-5. **Process Tree Termination:** Commands execute in isolated process groups with strict timeouts, killing all descendant processes on timeout.
-6. **Docker OCI Sandbox:** When `SANDBOX_DRIVER=docker` is configured, execution runs inside ephemeral containers with CPU limits (`2.0`), memory limits (`2GB`), PID limits (`100`), dropped Linux capabilities (`--cap-drop=ALL`), and guaranteed teardown on drop.
+1. **Mode Enforcement:** Review mode has no arbitrary shell or file-write tool. Fix mode retains editing and test execution with authorization checks.
+2. **Trust Boundary:** The webhook daemon only starts with a dedicated, rootless Docker backend. Local mode is for trusted CLI development; it is not process isolation and cannot publish fixes.
+3. **Credential Isolation:** The untrusted container cannot mount Git metadata, receive installation tokens, or access the service's process environment. The host controls credentials and pushing.
+4. **Path Protection:** File tool paths reject `..`, absolute paths, and symlinks; Docker file operations run inside the container to avoid host path races.
+5. **Container Restrictions:** Job containers have no network, read-only root filesystems, writable workspaces, CPU/memory/PID limits, dropped capabilities, and teardown on drop. Missing offline dependencies block publishing.
+6. **Job Metadata:** Jobs and deduplication IDs persist in `/data/openreview-jobs.json`. A restart marks interrupted jobs failed; automatic execution replay is intentionally not implemented because partial publishing is not safely idempotent.
 
 ---
 
@@ -98,9 +97,9 @@ OpenReview natively supports multi-tenant GitHub App deployments:
 | Method | Path | Description | Authentication |
 | :--- | :--- | :--- | :--- |
 | `POST` | `/api/webhooks/github` | Ingests GitHub App webhook events | Constant-time HMAC-SHA256 (`X-Hub-Signature-256`) |
-| `GET` | `/api/manifest` | GitHub App Manifest configuration for 1-click registration | None |
-| `GET` | `/api/jobs` | Lists recent webhook jobs and states | None |
-| `GET` | `/api/jobs/{id}` | Queries status and error diagnostics for a specific job | None |
+| `GET` | `/api/manifest` | Reference JSON for manual GitHub App registration (not a registration endpoint) | None |
+| `GET` | `/api/jobs` | Lists job metadata across installations (operator only) | `Authorization: Bearer <JOB_API_TOKEN>` |
+| `GET` | `/api/jobs/{id}` | Queries job status and diagnostics (operator only) | `Authorization: Bearer <JOB_API_TOKEN>` |
 | `GET` | `/health` | Liveness & readiness probe | None |
 | `GET` | `/metrics` | Prometheus exposition format metrics | None |
 | `GET` | `/` | Service overview landing interface | None |
@@ -127,8 +126,12 @@ LLM_PROVIDER=anthropic
 LLM_MODEL=claude-3-7-sonnet-20250219
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Sandbox Driver ("local" | "docker")
-SANDBOX_DRIVER=local
+# Secure webhook execution requires an isolated rootless Docker engine
+SANDBOX_DRIVER=docker
+SANDBOX_DOCKER_SOCKET=/run/user/10001/docker.sock
+SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces
+JOB_API_TOKEN=replace_with_at_least_32_random_characters
+MAX_CONCURRENT_JOBS=10
 ```
 
 ---
@@ -143,15 +146,20 @@ SANDBOX_DRIVER=local
    # Edit .env with your credentials
    ```
 
-2. Start the service:
+2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
+
+3. Build the execution image **on that rootless daemon**, then start the service:
    ```bash
+   DOCKER_HOST=unix:///run/user/10001/docker.sock docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
    docker compose up -d
    ```
 
-3. Verify service health:
+4. Verify service health:
    ```bash
    curl -f http://localhost:3000/health
    ```
+
+   Place the webhook behind an HTTPS reverse proxy with valid TLS, a stable public DNS name, request-size limits, and access to `/api/webhooks/github`. Only the signed webhook endpoint should be public for event ingestion. Test the configured rootless daemon before accepting untrusted workloads.
 
 ### Option 2: Standalone Binary
 
@@ -160,8 +168,11 @@ SANDBOX_DRIVER=local
    cargo build --release
    ```
 
-2. Verify local configuration:
+2. Export the environment, then verify local configuration:
    ```bash
+   set -a
+   . ./.env
+   set +a
    ./target/release/openreview verify-config
    ```
 
@@ -184,7 +195,7 @@ openreview review --repo owner/my-repo --pr 42 --dry-run
 
 ---
 
-## GitHub App Registration (1-Click Manifest)
+## GitHub App Registration (Manual Setup)
 
 1. Navigate to `https://github.com/settings/apps/new`.
 2. Configure your webhook URL: `https://YOUR_DOMAIN/api/webhooks/github`.
@@ -199,7 +210,9 @@ openreview review --repo owner/my-repo --pr 42 --dry-run
      - `Pull request`
      - `Pull request review comment`
 4. Generate a private key (`.pem`) and note your App ID and Webhook Secret.
-5. Alternatively, inspect `GET /api/manifest` for the pre-built manifest JSON.
+5. Choose "Only on this account" by default. Multi-organization operators can choose "Any account" explicitly, with an installation policy and LLM cost controls.
+6. Inspect `GET /api/manifest` as a reference template. It contains a placeholder webhook URL and does not implement GitHub's manifest-registration POST/redirect flow.
+7. Every self-hosted deployment must register and secure its **own** GitHub App and private key. Do not distribute one shared App private key to other operators.
 
 ---
 

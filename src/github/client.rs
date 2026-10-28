@@ -4,10 +4,10 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT}
 use serde_json::json;
 use tracing::{debug, warn};
 
-#[derive(Clone, Debug)]
+// Never derive Debug: the client contains a live GitHub installation token.
+#[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
-    token: String,
     base_url: String,
 }
 
@@ -32,7 +32,6 @@ impl GitHubClient {
 
         Ok(Self {
             client,
-            token,
             base_url: "https://api.github.com".to_string(),
         })
     }
@@ -41,10 +40,6 @@ impl GitHubClient {
         let mut client = Self::new(token)?;
         client.base_url = base_url;
         Ok(client)
-    }
-
-    pub fn token(&self) -> &str {
-        &self.token
     }
 
     pub async fn get_repository(&self, owner: &str, repo: &str) -> Result<Repository> {
@@ -336,28 +331,40 @@ impl GitHubClient {
         repo: &str,
         pr_number: u64,
     ) -> Result<Vec<crate::github::types::ChangedFile>> {
-        let url = format!(
-            "{}/repos/{owner}/{repo}/pulls/{pr_number}/files",
-            self.base_url
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch PR files: {e}")))?;
+        let mut files = Vec::new();
+        for page in 1..=30 {
+            let url = format!(
+                "{}/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
+                self.base_url
+            );
+            let resp = self.client.get(&url).send().await.map_err(|e| {
+                AppError::GitHubApi(format!("Failed to fetch PR files page {page}: {e}"))
+            })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::GitHubApi(format!(
-                "PR files fetch failed ({status}): {text}"
-            )));
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::GitHubApi(format!(
+                    "PR files page {page} failed ({status}): {text}"
+                )));
+            }
+
+            let mut batch = resp
+                .json::<Vec<crate::github::types::ChangedFile>>()
+                .await
+                .map_err(|e| {
+                    AppError::GitHubApi(format!("Failed to parse PR files page {page}: {e}"))
+                })?;
+            let count = batch.len();
+            files.append(&mut batch);
+            if count < 100 {
+                return Ok(files);
+            }
         }
-
-        resp.json::<Vec<crate::github::types::ChangedFile>>()
-            .await
-            .map_err(|e| AppError::GitHubApi(format!("Failed to parse PR files: {e}")))
+        Err(AppError::GitHubApi(
+            "PR file list may exceed GitHub's 3,000-file API limit; refusing incomplete context"
+                .into(),
+        ))
     }
 
     pub async fn get_issue_comment(

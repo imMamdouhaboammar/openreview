@@ -34,6 +34,8 @@ pub struct WorkflowParams {
     #[serde(default)]
     pub dry_run: bool,
     pub head_sha: Option<String>,
+    #[serde(default)]
+    pub from_webhook: bool,
 }
 
 fn default_workflow_mode() -> WorkflowMode {

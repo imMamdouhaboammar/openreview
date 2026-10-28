@@ -50,6 +50,9 @@ pub enum AppError {
     #[error("Missing installation ID in webhook payload")]
     MissingInstallationId,
 
+    #[error("Missing GitHub webhook delivery ID")]
+    MissingDeliveryId,
+
     #[error("Command execution failed ({exit_code}): {output}")]
     CommandFailed { exit_code: i32, output: String },
 
@@ -74,6 +77,7 @@ impl IntoResponse for AppError {
             AppError::VerificationFailed(_) => (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()),
             AppError::PublishingForbiddenInReviewMode => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::MissingInstallationId => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::MissingDeliveryId => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Workflow(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             AppError::CommandFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),

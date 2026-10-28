@@ -60,10 +60,32 @@ impl WorkflowPublisher {
                 starting_sha: params.head_sha.clone(),
                 published_sha: None,
                 action_taken: "dry_run_simulated".to_string(),
-                verification_passed: true,
+                verification_passed: false,
                 success: true,
                 reason: Some("Dry-run mode: remote changes simulated without push".to_string()),
             });
+        }
+
+        let gh = gh_client.ok_or_else(|| {
+            AppError::Unauthorized("Publishing requires an authenticated GitHub App client".into())
+        })?;
+        let starting_sha = params.head_sha.as_deref().ok_or_else(|| {
+            AppError::Workflow("Publishing requires the verified starting PR head SHA".into())
+        })?;
+        if params.actor.trim().is_empty() {
+            return Err(AppError::Unauthorized(
+                "Publishing requires an identified authorizer".into(),
+            ));
+        }
+
+        // Recheck authorization after the agent completes: access can be revoked mid-run.
+        let permission = gh
+            .get_collaborator_permission(owner, repo, &params.actor)
+            .await?;
+        if !crate::github::client::is_permission_authorized_for_fix(&permission) {
+            return Err(AppError::Unauthorized(
+                "Fix authorization was revoked during execution".into(),
+            ));
         }
 
         // 3. Check if files were actually modified
@@ -73,6 +95,8 @@ impl WorkflowPublisher {
                 "No files modified during fix workflow for PR #{}",
                 params.pr_number
             );
+            gh.post_comment(owner, repo, params.pr_number,
+                "## Fix review completed\n\nNo repository changes were made; nothing was committed or pushed.").await?;
             return Ok(PublishAuditRecord {
                 actor: params.actor.clone(),
                 installation_id: params.installation_id,
@@ -82,7 +106,7 @@ impl WorkflowPublisher {
                 starting_sha: params.head_sha.clone(),
                 published_sha: None,
                 action_taken: "no_changes".to_string(),
-                verification_passed: true,
+                verification_passed: false,
                 success: true,
                 reason: Some("No modifications detected in workspace".to_string()),
             });
@@ -120,14 +144,19 @@ impl WorkflowPublisher {
         }
 
         // 5. Check whether the target branch changed concurrently on remote
-        if let Some(gh) = gh_client
-            && let Some(start_sha) = &params.head_sha
-            && let Ok(current_pr) = gh.get_pull_request(owner, repo, params.pr_number).await
-            && &current_pr.head.sha != start_sha
+        let current_pr = gh.get_pull_request(owner, repo, params.pr_number).await?;
+        let head_repo = current_pr.head.repo.as_ref().map(|r| r.full_name.as_str());
+        if head_repo != Some(params.repo_full_name.as_str())
+            || current_pr.head.r#ref != params.pr_branch
         {
+            return Err(AppError::Workflow(
+                "PR head repository or target branch changed; publish aborted".into(),
+            ));
+        }
+        if current_pr.head.sha != starting_sha {
             let reason = format!(
                 "Target branch changed concurrently: started at {}, current is {}",
-                start_sha, current_pr.head.sha
+                starting_sha, current_pr.head.sha
             );
             warn!("{}: aborting git push", reason);
             let comment = format!(
@@ -161,7 +190,20 @@ impl WorkflowPublisher {
 
         // Determine resulting SHA
         let rev_out = sandbox.run_command("git", &["rev-parse", "HEAD"]).await?;
+        if rev_out.exit_code != 0 {
+            return Err(AppError::Sandbox(format!(
+                "Unable to determine published git commit: {}",
+                rev_out.stderr
+            )));
+        }
         let published_sha = rev_out.stdout.trim().to_string();
+        let confirmed_pr = gh.get_pull_request(owner, repo, params.pr_number).await?;
+        if confirmed_pr.head.sha != published_sha {
+            return Err(AppError::Workflow(format!(
+                "Push result not confirmed: expected {published_sha}, GitHub reports {}",
+                confirmed_pr.head.sha
+            )));
+        }
 
         info!(
             "Successfully published fix commit {} to {} on branch {}",

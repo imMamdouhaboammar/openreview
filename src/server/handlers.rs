@@ -3,12 +3,15 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
+use hmac::{Hmac, Mac};
 use serde_json::json;
+use sha2::Sha256;
+use sha2::digest::KeyInit;
 use std::sync::atomic::Ordering;
 use tracing::{error, info, warn};
 
 use crate::error::AppError;
-use crate::github::types::{IssueCommentPayload, PullRequestReviewCommentPayload, ReactionPayload};
+use crate::github::types::{IssueCommentPayload, PullRequestReviewCommentPayload};
 use crate::github::verify_signature;
 use crate::jobs::JobStatus;
 use crate::server::state::AppState;
@@ -42,34 +45,31 @@ pub async fn webhook_handler(
         return Err(AppError::InvalidWebhookSignature);
     }
 
-    // 2. Delivery Idempotency and Deduplication
-    let delivery_id = headers
-        .get("x-github-delivery")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-
-    if !delivery_id.is_empty() {
-        if state.jobs.is_delivery_processed(&delivery_id).await {
-            info!("Duplicate webhook delivery {} ignored", delivery_id);
-            return Ok((
-                StatusCode::OK,
-                Json(json!({
-                    "status": "ignored",
-                    "reason": "duplicate_delivery",
-                    "delivery_id": delivery_id
-                })),
-            )
-                .into_response());
-        }
-        state.jobs.register_delivery(&delivery_id).await;
-    }
-
-    // 3. Identify Event Type
     let event_type = headers
         .get("x-github-event")
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default();
+    if matches!(event_type, "issue_comment" | "pull_request_review_comment") {
+        let envelope: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| AppError::Internal(format!("Invalid webhook envelope: {e}")))?;
+        if envelope
+            .pointer("/installation/id")
+            .and_then(|v| v.as_u64())
+            .is_none()
+        {
+            return Err(AppError::MissingInstallationId);
+        }
+    }
+
+    // 2. Delivery Idempotency and Deduplication
+    let delivery_id = headers
+        .get("x-github-delivery")
+        .and_then(|h| h.to_str().ok())
+        .filter(|s| !s.is_empty())
+        .ok_or(AppError::MissingDeliveryId)?
+        .to_string();
+
+    // 3. Identify Event Type
 
     match event_type {
         "issue_comment" => {
@@ -77,6 +77,7 @@ pub async fn webhook_handler(
                 .map_err(|e| AppError::Internal(format!("Failed to parse issue_comment: {e}")))?;
 
             if payload.action == "created"
+                && !is_bot_actor(&payload.comment.user, &state.config.bot_username)
                 && payload.issue.pull_request.is_some()
                 && let Some(cmd) =
                     parse_bot_command(&payload.comment.body, &state.config.bot_username)
@@ -105,6 +106,9 @@ pub async fn webhook_handler(
                         cmd.mode,
                     )
                     .await?;
+                let Some(job) = job else {
+                    return Ok(duplicate_delivery_response(&delivery_id));
+                };
 
                 let coordinator = state.coordinator.clone();
                 let metrics = state.metrics.clone();
@@ -117,7 +121,10 @@ pub async fn webhook_handler(
                 tokio::spawn(async move {
                     let sem = jobs.semaphore();
                     let _permit = sem.acquire().await;
-                    jobs.update_status(&job_id, JobStatus::Running, None).await;
+                    if !persist_job_status(&jobs, &job_id, JobStatus::Running, None).await {
+                        metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
+                        return;
+                    }
 
                     let params = WorkflowParams {
                         repo_full_name: repo_full_name.clone(),
@@ -130,6 +137,7 @@ pub async fn webhook_handler(
                         actor: actor.clone(),
                         dry_run: false,
                         head_sha: None,
+                        from_webhook: true,
                         messages: vec![crate::workflow::ThreadMessage {
                             role: "user".to_string(),
                             content: if !cmd.prompt.is_empty() {
@@ -143,7 +151,7 @@ pub async fn webhook_handler(
                     match coordinator.execute_bot_workflow(params).await {
                         Ok(res) => {
                             if res.success {
-                                jobs.update_status(&job_id, JobStatus::Completed, None)
+                                persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
                                     .await;
                                 if mode == WorkflowMode::Fix {
                                     metrics.fixes_completed.fetch_add(1, Ordering::Relaxed);
@@ -158,8 +166,13 @@ pub async fn webhook_handler(
                                 let err = res.error_message.unwrap_or_else(|| {
                                     "Agent loop terminated with error".to_string()
                                 });
-                                jobs.update_status(&job_id, JobStatus::Failed, Some(err.clone()))
-                                    .await;
+                                persist_job_status(
+                                    &jobs,
+                                    &job_id,
+                                    JobStatus::Failed,
+                                    Some(err.clone()),
+                                )
+                                .await;
                                 if mode == WorkflowMode::Fix {
                                     metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
                                 } else {
@@ -169,8 +182,13 @@ pub async fn webhook_handler(
                             }
                         }
                         Err(e) => {
-                            jobs.update_status(&job_id, JobStatus::Failed, Some(e.to_string()))
-                                .await;
+                            persist_job_status(
+                                &jobs,
+                                &job_id,
+                                JobStatus::Failed,
+                                Some(e.to_string()),
+                            )
+                            .await;
                             if mode == WorkflowMode::Fix {
                                 metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
                             } else {
@@ -199,6 +217,7 @@ pub async fn webhook_handler(
                 .map_err(|e| AppError::Internal(format!("Failed to parse review_comment: {e}")))?;
 
             if payload.action == "created"
+                && !is_bot_actor(&payload.comment.user, &state.config.bot_username)
                 && let Some(cmd) =
                     parse_bot_command(&payload.comment.body, &state.config.bot_username)
             {
@@ -224,6 +243,9 @@ pub async fn webhook_handler(
                         cmd.mode,
                     )
                     .await?;
+                let Some(job) = job else {
+                    return Ok(duplicate_delivery_response(&delivery_id));
+                };
 
                 let coordinator = state.coordinator.clone();
                 let metrics = state.metrics.clone();
@@ -236,7 +258,10 @@ pub async fn webhook_handler(
                 tokio::spawn(async move {
                     let sem = jobs.semaphore();
                     let _permit = sem.acquire().await;
-                    jobs.update_status(&job_id, JobStatus::Running, None).await;
+                    if !persist_job_status(&jobs, &job_id, JobStatus::Running, None).await {
+                        metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
+                        return;
+                    }
 
                     let params = WorkflowParams {
                         repo_full_name,
@@ -249,6 +274,7 @@ pub async fn webhook_handler(
                         actor,
                         dry_run: false,
                         head_sha: Some(head_sha),
+                        from_webhook: true,
                         messages: vec![crate::workflow::ThreadMessage {
                             role: "user".to_string(),
                             content: if !cmd.prompt.is_empty() {
@@ -262,7 +288,7 @@ pub async fn webhook_handler(
                     match coordinator.execute_bot_workflow(params).await {
                         Ok(res) => {
                             if res.success {
-                                jobs.update_status(&job_id, JobStatus::Completed, None)
+                                persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
                                     .await;
                                 if mode == WorkflowMode::Fix {
                                     metrics.fixes_completed.fetch_add(1, Ordering::Relaxed);
@@ -273,7 +299,7 @@ pub async fn webhook_handler(
                                 let err = res.error_message.unwrap_or_else(|| {
                                     "Agent loop terminated with error".to_string()
                                 });
-                                jobs.update_status(&job_id, JobStatus::Failed, Some(err))
+                                persist_job_status(&jobs, &job_id, JobStatus::Failed, Some(err))
                                     .await;
                                 if mode == WorkflowMode::Fix {
                                     metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
@@ -283,8 +309,13 @@ pub async fn webhook_handler(
                             }
                         }
                         Err(e) => {
-                            jobs.update_status(&job_id, JobStatus::Failed, Some(e.to_string()))
-                                .await;
+                            persist_job_status(
+                                &jobs,
+                                &job_id,
+                                JobStatus::Failed,
+                                Some(e.to_string()),
+                            )
+                            .await;
                             if mode == WorkflowMode::Fix {
                                 metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
                             } else {
@@ -308,43 +339,15 @@ pub async fn webhook_handler(
                     .into_response());
             }
         }
-        "reaction" => {
-            let payload: ReactionPayload = serde_json::from_slice(&body)
-                .map_err(|e| AppError::Internal(format!("Failed to parse reaction: {e}")))?;
-
-            if payload.action == "created"
-                && let Some(comment) = payload.comment
-            {
-                let coordinator = state.coordinator.clone();
-                let repo = payload.repository.full_name.clone();
-                let reaction = payload.reaction.content.clone();
-                let user_login = payload.reaction.user.login.clone();
-                let installation_id = payload.installation.map(|i| i.id);
-
-                tokio::spawn(async move {
-                    if let Err(e) = coordinator
-                        .handle_reaction_event(
-                            &repo,
-                            installation_id,
-                            comment.id,
-                            &reaction,
-                            &user_login,
-                        )
-                        .await
-                    {
-                        warn!("Reaction event handling error: {e}");
-                    }
-                });
-
-                return Ok((
-                    StatusCode::ACCEPTED,
-                    Json(json!({ "status": "reaction_handled" })),
-                )
-                    .into_response());
-            }
-        }
         "installation" | "installation_repositories" => {
-            // Handle App installation lifecycle changes
+            // Revoke cached credentials when installation membership or access changes.
+            if let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body)
+                && let Some(id) = envelope
+                    .pointer("/installation/id")
+                    .and_then(|v| v.as_u64())
+            {
+                state.coordinator.token_manager.invalidate(id).await;
+            }
             info!("Received GitHub App installation lifecycle event: {event_type}");
             return Ok((
                 StatusCode::OK,
@@ -368,18 +371,82 @@ pub async fn webhook_handler(
         .into_response())
 }
 
-pub async fn get_job_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<crate::jobs::JobRecord>, AppError> {
-    match state.jobs.get_job(&id).await {
-        Some(job) => Ok(Json(job)),
-        None => Err(AppError::Workflow(format!("Job '{id}' not found"))),
+fn duplicate_delivery_response(delivery_id: &str) -> Response {
+    info!("Duplicate webhook delivery {} ignored", delivery_id);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ignored", "reason": "duplicate_delivery", "delivery_id": delivery_id
+        })),
+    )
+        .into_response()
+}
+
+async fn persist_job_status(
+    manager: &crate::jobs::JobManager,
+    id: &str,
+    status: JobStatus,
+    error: Option<String>,
+) -> bool {
+    match manager.update_status(id, status, error).await {
+        Ok(()) => true,
+        Err(e) => {
+            error!("Cannot persist job {id} status: {e}");
+            false
+        }
     }
 }
 
-pub async fn list_jobs_handler(State(state): State<AppState>) -> Json<Vec<crate::jobs::JobRecord>> {
-    Json(state.jobs.list_jobs().await)
+fn is_bot_actor(user: &crate::github::types::User, bot_username: &str) -> bool {
+    user.r#type.eq_ignore_ascii_case("bot")
+        || user
+            .login
+            .eq_ignore_ascii_case(&format!("{bot_username}[bot]"))
+}
+
+pub async fn get_job_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<crate::jobs::JobRecord>, StatusCode> {
+    authorize_job_api(&headers, &state.config)?;
+    match state.jobs.get_job(&id).await {
+        Some(job) => Ok(Json(job)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+pub async fn list_jobs_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::jobs::JobRecord>>, StatusCode> {
+    authorize_job_api(&headers, &state.config)?;
+    Ok(Json(state.jobs.list_jobs().await))
+}
+
+fn authorize_job_api(
+    headers: &HeaderMap,
+    config: &crate::config::Config,
+) -> Result<(), StatusCode> {
+    let configured = config
+        .job_api_token
+        .as_deref()
+        .filter(|token| token.len() >= 32)
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Compare keyed digests without revealing a matching token prefix through timing.
+    let mut mac = Hmac::<Sha256>::new_from_slice(configured.as_bytes())
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    mac.update(b"openreview-job-api-auth-v1");
+    let mut expected = Hmac::<Sha256>::new_from_slice(provided.as_bytes())
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    expected.update(b"openreview-job-api-auth-v1");
+    mac.verify_slice(&expected.finalize().into_bytes())
+        .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
 pub async fn manifest_handler() -> Json<serde_json::Value> {
@@ -390,7 +457,7 @@ pub async fn manifest_handler() -> Json<serde_json::Value> {
             "url": "https://YOUR_DOMAIN/api/webhooks/github"
         },
         "redirect_url": "https://YOUR_DOMAIN/",
-        "public": true,
+        "public": false,
         "default_permissions": {
             "pull_requests": "write",
             "issues": "write",

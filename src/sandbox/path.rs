@@ -8,10 +8,12 @@ pub fn safe_resolve_path(base: &Path, user_path: &str) -> Result<PathBuf> {
         return Err(AppError::PathTraversal("Empty path is invalid".to_string()));
     }
 
-    // Strip leading slashes to treat as relative to base
-    let clean_path = user_path.trim_start_matches('/');
-
-    let path_obj = Path::new(clean_path);
+    let path_obj = Path::new(user_path);
+    if path_obj.is_absolute() {
+        return Err(AppError::PathTraversal(
+            "Absolute paths are not permitted".to_string(),
+        ));
+    }
 
     // Reject explicit parent directory navigation components
     for comp in path_obj.components() {
@@ -21,7 +23,7 @@ pub fn safe_resolve_path(base: &Path, user_path: &str) -> Result<PathBuf> {
                     "Path traversal with '..' detected in '{user_path}'"
                 )));
             }
-            Component::Prefix(_) => {
+            Component::Prefix(_) | Component::RootDir => {
                 return Err(AppError::PathTraversal(format!(
                     "Prefixes not permitted in '{user_path}'"
                 )));
@@ -35,41 +37,27 @@ pub fn safe_resolve_path(base: &Path, user_path: &str) -> Result<PathBuf> {
         .canonicalize()
         .map_err(|e| AppError::Sandbox(format!("Failed to canonicalize base directory: {e}")))?;
 
-    let target = canonical_base.join(clean_path);
-
-    // If file exists, canonicalize target and verify prefix
-    if target.exists() {
-        let canonical_target = target.canonicalize().map_err(|e| {
-            AppError::Sandbox(format!("Failed to canonicalize path '{user_path}': {e}"))
-        })?;
-
-        if !canonical_target.starts_with(&canonical_base) {
-            return Err(AppError::PathTraversal(format!(
-                "Resolved target '{user_path}' escapes sandbox base"
-            )));
-        }
-
-        Ok(canonical_target)
-    } else {
-        // Find deepest existing ancestor to guard against symlink escapes in parent dirs
-        let mut curr = target.as_path();
-        while let Some(parent) = curr.parent() {
-            if parent.exists() {
-                let canonical_parent = parent.canonicalize().map_err(|e| {
-                    AppError::Sandbox(format!("Failed to canonicalize parent: {e}"))
-                })?;
-                if !canonical_parent.starts_with(&canonical_base) {
+    let mut target = canonical_base.clone();
+    for component in path_obj.components() {
+        if let Component::Normal(name) = component {
+            target.push(name);
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(AppError::PathTraversal(format!(
-                        "Parent directory of '{user_path}' escapes sandbox base"
+                        "Symlinks are not permitted in '{user_path}'"
                     )));
                 }
-                break;
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(AppError::Sandbox(format!(
+                        "Failed to inspect path '{user_path}': {e}"
+                    )));
+                }
             }
-            curr = parent;
         }
-
-        Ok(target)
     }
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -110,6 +98,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let err = safe_resolve_path(dir.path(), "").unwrap_err();
         assert!(matches!(err, AppError::PathTraversal(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_rejects_dangling_symlink_and_absolute_path() {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        symlink(
+            "/tmp/nonexistent-openreview-target",
+            dir.path().join("dangling"),
+        )
+        .unwrap();
+        assert!(matches!(
+            safe_resolve_path(dir.path(), "dangling"),
+            Err(AppError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            safe_resolve_path(dir.path(), "/etc/passwd"),
+            Err(AppError::PathTraversal(_))
+        ));
     }
 
     #[test]

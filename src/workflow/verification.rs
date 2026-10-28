@@ -15,9 +15,18 @@ pub struct VerificationCheck {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationReport {
+    pub outcome: VerificationOutcome,
     pub all_passed: bool,
     pub checks: Vec<VerificationCheck>,
     pub skipped_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VerificationOutcome {
+    Passed,
+    Failed,
+    Unavailable,
+    Incomplete,
 }
 
 impl VerificationReport {
@@ -31,6 +40,9 @@ impl VerificationReport {
             } else {
                 md.push_str("ℹ️ **No automated test suite detected** for this repository.\n");
             }
+            md.push_str(
+                "\n> **Outcome:** No verification executed. Automatic publishing blocked.\n",
+            );
             return md;
         }
 
@@ -45,7 +57,7 @@ impl VerificationReport {
             }
         }
 
-        if self.all_passed {
+        if self.outcome == VerificationOutcome::Passed {
             md.push_str("\n> **Outcome:** All verification checks passed successfully.\n");
         } else {
             md.push_str(
@@ -67,7 +79,8 @@ impl ProjectVerifier {
 
         if commands.is_empty() {
             return Ok(VerificationReport {
-                all_passed: true, // No configured checks, nothing to fail
+                outcome: VerificationOutcome::Unavailable,
+                all_passed: false,
                 checks: Vec::new(),
                 skipped_reason: Some(
                     "No supported test framework detected in repository".to_string(),
@@ -76,22 +89,35 @@ impl ProjectVerifier {
         }
 
         let mut all_passed = true;
+        let mut unavailable = false;
+        let mut incomplete = false;
 
         for (name, cmd) in commands {
             info!("Running verification check '{name}': {cmd}");
-            let output = sandbox.run_bash(&cmd).await?;
+            let output = match sandbox.run_bash(&cmd).await {
+                Ok(output) => output,
+                Err(err) => {
+                    all_passed = false;
+                    incomplete = true;
+                    checks.push(VerificationCheck {
+                        name,
+                        command: cmd,
+                        passed: false,
+                        exit_code: -1,
+                        output_snippet: err.to_string(),
+                    });
+                    continue;
+                }
+            };
             let passed = output.exit_code == 0;
             if !passed {
                 all_passed = false;
+                unavailable |= output.exit_code == 127;
             }
 
             let snippet = if !passed {
                 let combined = format!("STDOUT:\n{}\nSTDERR:\n{}", output.stdout, output.stderr);
-                if combined.len() > 2000 {
-                    format!("{}... (truncated)", &combined[..2000])
-                } else {
-                    combined
-                }
+                truncate_verification_output(&combined, 2000)
             } else {
                 String::new()
             };
@@ -106,6 +132,15 @@ impl ProjectVerifier {
         }
 
         Ok(VerificationReport {
+            outcome: if incomplete {
+                VerificationOutcome::Incomplete
+            } else if unavailable {
+                VerificationOutcome::Unavailable
+            } else if all_passed {
+                VerificationOutcome::Passed
+            } else {
+                VerificationOutcome::Failed
+            },
             all_passed,
             checks,
             skipped_reason: None,
@@ -120,7 +155,7 @@ impl ProjectVerifier {
         } else if dir.join("bun.lock").exists() || dir.join("bun.lockb").exists() {
             commands.push(("Bun Test".to_string(), "bun test".to_string()));
         } else if dir.join("package.json").exists() {
-            commands.push(("NPM Test".to_string(), "npm test --if-present".to_string()));
+            commands.push(("NPM Test".to_string(), "npm test".to_string()));
         } else if dir.join("go.mod").exists() {
             commands.push(("Go Test".to_string(), "go test ./...".to_string()));
         } else if dir.join("pytest.ini").exists() || dir.join("pyproject.toml").exists() {
@@ -129,6 +164,17 @@ impl ProjectVerifier {
 
         commands
     }
+}
+
+fn truncate_verification_output(output: &str, max_bytes: usize) -> String {
+    if output.len() <= max_bytes {
+        return output.to_string();
+    }
+    let mut end = max_bytes;
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}... (truncated)", &output[..end])
 }
 
 #[cfg(test)]
@@ -148,6 +194,7 @@ mod tests {
     #[test]
     fn test_verification_report_markdown() {
         let report = VerificationReport {
+            outcome: VerificationOutcome::Passed,
             all_passed: true,
             checks: vec![VerificationCheck {
                 name: "Unit Tests".to_string(),
@@ -162,5 +209,13 @@ mod tests {
         let md = report.to_markdown();
         assert!(md.contains("✅ **Unit Tests**"));
         assert!(md.contains("All verification checks passed successfully"));
+    }
+
+    #[test]
+    fn test_multibyte_verification_output_truncation() {
+        let output = format!("{}🚀error", "a".repeat(1999));
+        let truncated = truncate_verification_output(&output, 2000);
+        assert!(truncated.contains("... (truncated)"));
+        assert!(!truncated.contains('🚀'));
     }
 }

@@ -37,7 +37,7 @@ pub async fn get_installation_token(
     app_id: &str,
     private_key_pem: &str,
     installation_id: u64,
-) -> Result<String> {
+) -> Result<(String, u64)> {
     let jwt = create_app_jwt(app_id, private_key_pem)?;
     let url = format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
 
@@ -63,7 +63,12 @@ pub async fn get_installation_token(
         .await
         .map_err(|e| AppError::GitHubApi(format!("Failed to parse installation token: {e}")))?;
 
-    Ok(token_resp.token)
+    let expires_at = chrono::DateTime::parse_from_rfc3339(&token_resp.expires_at)
+        .map_err(|e| AppError::Auth(format!("Invalid installation token expiry: {e}")))?
+        .timestamp();
+    let expiry = u64::try_from(expires_at)
+        .map_err(|_| AppError::Auth("Installation token expired before Unix epoch".into()))?;
+    Ok((token_resp.token, expiry))
 }
 
 use std::collections::HashMap;
@@ -101,9 +106,13 @@ impl TokenManager {
             }
         }
 
-        let fresh_token =
+        let (fresh_token, exp) =
             get_installation_token(client, app_id, private_key_pem, installation_id).await?;
-        let exp = now + 3600;
+        if exp <= now + 300 {
+            return Err(AppError::Auth(
+                "Installation token has insufficient remaining lifetime".into(),
+            ));
+        }
 
         {
             let mut guard = self.tokens.write().await;
@@ -133,5 +142,49 @@ mod tests {
         };
         let serialized = serde_json::to_string(&claims).unwrap();
         assert!(serialized.contains("\"iss\":\"12345\""));
+    }
+
+    #[tokio::test]
+    async fn installation_cache_is_isolated_by_id_and_invalidation_is_scoped() {
+        let manager = TokenManager::new();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        {
+            let mut cached = manager.tokens.write().await;
+            cached.insert(101, ("token-for-installation-101".into(), expiry));
+            cached.insert(202, ("token-for-installation-202".into(), expiry));
+        }
+        let client = reqwest::Client::new();
+        assert_eq!(
+            manager
+                .get_token(&client, "app", "bad-key", 101)
+                .await
+                .unwrap(),
+            "token-for-installation-101"
+        );
+        assert_eq!(
+            manager
+                .get_token(&client, "app", "bad-key", 202)
+                .await
+                .unwrap(),
+            "token-for-installation-202"
+        );
+        manager.invalidate(101).await;
+        assert!(
+            manager
+                .get_token(&client, "app", "bad-key", 101)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            manager
+                .get_token(&client, "app", "bad-key", 202)
+                .await
+                .unwrap(),
+            "token-for-installation-202"
+        );
     }
 }

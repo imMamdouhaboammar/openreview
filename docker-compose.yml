@@ -22,9 +22,18 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
-      - SANDBOX_DRIVER=${SANDBOX_DRIVER:-local}
+      - SANDBOX_DRIVER=${SANDBOX_DRIVER:-docker}
+      - JOB_API_TOKEN=${JOB_API_TOKEN:?set a unique JOB_API_TOKEN (at least 32 characters)}
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-10}
+      - DOCKER_HOST=unix:///run/openreview/docker.sock
+      - SANDBOX_WORKSPACE_DIR=${SANDBOX_WORKSPACE_DIR:?set a shared absolute host directory for job workspaces}
     volumes:
       - openreview_data:/data
+      # Mount only a separately administered rootless Docker daemon socket.
+      # Never mount /var/run/docker.sock from a rootful host daemon.
+      - ${SANDBOX_DOCKER_SOCKET:?set path to a dedicated rootless Docker socket}:/run/openreview/docker.sock
+      # The rootless daemon and service container must see identical absolute paths.
+      - ${SANDBOX_WORKSPACE_DIR:?set sandbox workspace path}:${SANDBOX_WORKSPACE_DIR:?set sandbox workspace path}
     restart: unless-stopped
     stop_signal: SIGTERM
     stop_grace_period: 30s

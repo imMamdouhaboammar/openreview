@@ -5,39 +5,32 @@ use serde_json::json;
 pub const MAX_TOOL_OUTPUT_CHARS: usize = 10_000;
 
 pub fn get_standard_tools(mode: WorkflowMode) -> Vec<ToolDefinition> {
-    let mut tools = vec![
-        ToolDefinition {
-            name: "bash".to_string(),
-            description: "Execute inspection commands in the sandbox environment. Working directory is repo root.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The command to execute"
-                    }
-                },
-                "required": ["command"]
-            }),
-        },
-        ToolDefinition {
-            name: "readFile".to_string(),
-            description: "Read the contents of a file from the repository sandbox.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The path to the file to read relative to repo root"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-    ];
+    let mut tools = vec![ToolDefinition {
+        name: "readFile".to_string(),
+        description: "Read the contents of a file from the repository sandbox.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the file to read relative to repo root"
+                }
+            },
+            "required": ["path"]
+        }),
+    }];
 
     // File writing is strictly limited to Fix mode
     if mode == WorkflowMode::Fix {
+        tools.push(ToolDefinition {
+            name: "bash".to_string(),
+            description: "Execute commands in the isolated, uncredentialed Fix workspace. Git publishing is performed separately by the trusted host.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"]
+            }),
+        });
         tools.push(ToolDefinition {
             name: "writeFile".to_string(),
             description:
@@ -123,6 +116,7 @@ mod tests {
         assert!(!review_tools.iter().any(|t| t.name == "writeFile"));
         assert!(review_tools.iter().any(|t| t.name == "readFile"));
         assert!(review_tools.iter().any(|t| t.name == "reply"));
+        assert!(!review_tools.iter().any(|t| t.name == "bash"));
 
         let fix_tools = get_standard_tools(WorkflowMode::Fix);
         assert!(fix_tools.iter().any(|t| t.name == "writeFile"));

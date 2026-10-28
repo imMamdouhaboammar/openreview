@@ -1,7 +1,9 @@
 use crate::error::{AppError, Result};
 use std::env;
 
-#[derive(Clone, Debug)]
+// This structure holds installation private keys, webhook HMAC material, and
+// provider credentials; never derive Debug and accidentally log the secrets.
+#[derive(Clone)]
 pub struct Config {
     pub github_app_id: String,
     pub github_app_private_key: String,
@@ -18,6 +20,9 @@ pub struct Config {
     pub ollama_base_url: Option<String>,
 
     pub sandbox_driver: String,
+    pub job_api_token: Option<String>,
+    pub max_concurrent_jobs: usize,
+    pub sandbox_workspace_dir: String,
     pub host: String,
     pub port: u16,
 }
@@ -49,13 +54,26 @@ impl Config {
 
         let anthropic_api_key = env::var("ANTHROPIC_API_KEY").ok();
         let openai_api_key = env::var("OPENAI_API_KEY").ok();
-        let openai_base_url = env::var("OPENAI_BASE_URL").ok();
+        let openai_base_url = env::var("OPENAI_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
         let gemini_api_key = env::var("GEMINI_API_KEY").ok();
-        let ollama_base_url = env::var("OLLAMA_BASE_URL").ok();
+        let ollama_base_url = env::var("OLLAMA_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
 
         let sandbox_driver = env::var("SANDBOX_DRIVER")
-            .unwrap_or_else(|_| "local".to_string())
+            .unwrap_or_else(|_| "docker".to_string())
             .to_lowercase();
+        let job_api_token = env::var("JOB_API_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let max_concurrent_jobs = env::var("MAX_CONCURRENT_JOBS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(10);
+        let sandbox_workspace_dir = env::var("SANDBOX_WORKSPACE_DIR")
+            .unwrap_or_else(|_| "/srv/openreview/workspaces".into());
 
         let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
 
@@ -78,6 +96,9 @@ impl Config {
             gemini_api_key,
             ollama_base_url,
             sandbox_driver,
+            job_api_token,
+            max_concurrent_jobs,
+            sandbox_workspace_dir,
             host,
             port,
         })
@@ -138,6 +159,21 @@ impl Config {
     pub fn validate_for_serve(&self) -> Result<()> {
         self.validate_github_credentials()?;
         self.validate_llm_credentials()?;
+        if self.sandbox_driver != "docker" {
+            return Err(AppError::Config(
+                "Webhook service requires SANDBOX_DRIVER=docker; local mode is for trusted CLI development only".to_string(),
+            ));
+        }
+        if self.job_api_token.as_deref().unwrap_or("").len() < 32 {
+            return Err(AppError::Config(
+                "JOB_API_TOKEN must be configured with at least 32 characters to protect job metadata".to_string(),
+            ));
+        }
+        if !(1..=100).contains(&self.max_concurrent_jobs) {
+            return Err(AppError::Config(
+                "MAX_CONCURRENT_JOBS must be between 1 and 100".into(),
+            ));
+        }
         Ok(())
     }
 }

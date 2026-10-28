@@ -24,11 +24,28 @@ pub struct ParsedCommand {
 
 /// Parses a comment body for bot commands like `@openreview review`, `@openreview fix <instructions>`, etc.
 pub fn parse_bot_command(body: &str, bot_username: &str) -> Option<ParsedCommand> {
-    let lower_body = body.to_lowercase();
-    let lower_bot = format!("@{}", bot_username.to_lowercase());
-
-    let bot_idx = lower_body.find(&lower_bot)?;
-    let after_mention = &body[bot_idx + lower_bot.len()..];
+    if bot_username.is_empty() {
+        return None;
+    }
+    let mention = format!("@{bot_username}");
+    let bytes = body.as_bytes();
+    let mention_bytes = mention.as_bytes();
+    // Search the original bytes: Unicode lowercasing can change byte offsets.
+    let end = bytes
+        .windows(mention_bytes.len())
+        .enumerate()
+        .find_map(|(i, candidate)| {
+            let previous = i.checked_sub(1).and_then(|n| bytes.get(n)).copied();
+            let next = bytes.get(i + mention_bytes.len()).copied();
+            let valid_boundary = |byte: Option<u8>| {
+                !matches!(byte, Some(b) if b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            };
+            (candidate.eq_ignore_ascii_case(mention_bytes)
+                && valid_boundary(previous)
+                && valid_boundary(next))
+            .then_some(i + mention_bytes.len())
+        })?;
+    let after_mention = &body[end..];
 
     // Trim leading colons, commas, or whitespace
     let trimmed =
@@ -124,5 +141,23 @@ mod tests {
             "openreview",
         );
         assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn test_unicode_before_mention_and_partial_usernames() {
+        assert_eq!(
+            parse_bot_command("İ عربي @OpenReview fix issue", "openreview")
+                .unwrap()
+                .mode,
+            WorkflowMode::Fix
+        );
+        for text in [
+            "@openreviewer fix",
+            "@openreview-bot fix",
+            "@openreview_bot fix",
+            "a@openreview fix",
+        ] {
+            assert!(parse_bot_command(text, "openreview").is_none(), "{text}");
+        }
     }
 }

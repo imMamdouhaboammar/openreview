@@ -5,7 +5,6 @@ use crate::server::handlers::{
 use crate::server::state::AppState;
 use axum::Router;
 use axum::routing::{get, post};
-use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub fn create_router(state: AppState) -> Router {
@@ -17,7 +16,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/jobs", get(list_jobs_handler))
         .route("/api/jobs/{id}", get(get_job_handler))
         .route("/api/webhooks/github", post(webhook_handler))
-        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

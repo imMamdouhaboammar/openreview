@@ -1,5 +1,4 @@
 use crate::error::{AppError, Result};
-use crate::sandbox::detect::detect_install_command;
 use crate::sandbox::path::safe_resolve_path;
 use crate::sandbox::traits::{CommandOutput, SandboxDriver, SandboxInstance};
 use async_trait::async_trait;
@@ -10,15 +9,15 @@ use tempfile::TempDir;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{info, warn};
+use tracing::info;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct LocalSandbox {
     _temp_dir: TempDir,
     work_path: PathBuf,
-    repo_full_name: String,
-    token: String,
+    _repo_full_name: String,
+    _token: String,
 }
 
 impl LocalSandbox {
@@ -27,8 +26,8 @@ impl LocalSandbox {
         Self {
             _temp_dir: temp_dir,
             work_path,
-            repo_full_name,
-            token,
+            _repo_full_name: repo_full_name,
+            _token: token,
         }
     }
 
@@ -158,46 +157,10 @@ impl SandboxInstance for LocalSandbox {
     }
 
     async fn commit_and_push(&self, message: &str, branch: &str) -> Result<()> {
-        let add_res = self.run_command("git", &["add", "-A"]).await?;
-        if add_res.exit_code != 0 {
-            return Err(AppError::Sandbox(format!(
-                "git add failed: {}",
-                add_res.stderr
-            )));
-        }
-
-        let commit_res = self
-            .run_command("git", &["commit", "--no-verify", "-m", message])
-            .await?;
-        if commit_res.exit_code != 0 {
-            return Err(AppError::Sandbox(format!(
-                "git commit failed: {}",
-                commit_res.stderr
-            )));
-        }
-
-        // Authenticate push dynamically without writing token into .git/config
-        let push_target = if !self.token.is_empty() {
-            format!(
-                "https://x-access-token:{}@github.com/{}.git",
-                self.token, self.repo_full_name
-            )
-        } else {
-            "origin".to_string()
-        };
-
-        let push_res = self
-            .run_command("git", &["push", &push_target, &format!("HEAD:{branch}")])
-            .await?;
-        if push_res.exit_code != 0 {
-            return Err(AppError::Sandbox(format!(
-                "git push failed: {}",
-                push_res.stderr
-            )));
-        }
-
-        info!("Successfully committed and pushed changes to branch {branch}");
-        Ok(())
+        let _ = (message, branch);
+        Err(AppError::Sandbox(
+            "Local sandbox is for trusted development only and cannot publish commits; use isolated Docker Fix mode".into(),
+        ))
     }
 
     fn work_dir(&self) -> &Path {
@@ -263,20 +226,6 @@ impl SandboxDriver for LocalSandboxDriver {
             let mut cmd = Command::new("git");
             cmd.arg(action).args(&args).current_dir(&work_path);
             let _ = cmd.output().await;
-        }
-
-        // Detect and run dependency installation if available
-        if let Some(install_cmd) = detect_install_command(&work_path) {
-            info!(
-                "Detected project package manager: {} {:?}",
-                install_cmd.cmd, install_cmd.args
-            );
-            let mut proc = Command::new(&install_cmd.cmd);
-            proc.args(&install_cmd.args).current_dir(&work_path);
-            LocalSandbox::sanitize_command(&mut proc);
-            if matches!(proc.output().await, Ok(out) if !out.status.success()) {
-                warn!("Dependency installation exited with non-zero status");
-            }
         }
 
         Ok(Box::new(LocalSandbox::new(

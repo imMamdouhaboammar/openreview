@@ -26,6 +26,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve { host, port } => {
+            config.validate_for_serve()?;
+            validate_isolated_docker_backend(&config)?;
+            let max_concurrent_jobs = config.max_concurrent_jobs;
             info!("Starting OpenReview-RS daemon on {}:{}", host, port);
 
             let llm = Arc::from(create_llm_provider(&config)?);
@@ -44,7 +47,10 @@ async fn main() -> Result<()> {
                 config,
                 coordinator,
                 metrics: Arc::new(Metrics::new()),
-                jobs: Arc::new(openreview::jobs::JobManager::default()),
+                jobs: Arc::new(openreview::jobs::JobManager::persistent(
+                    "/data/openreview-jobs.json",
+                    max_concurrent_jobs,
+                )?),
             };
 
             let app = create_router(state);
@@ -85,6 +91,7 @@ async fn main() -> Result<()> {
                 actor: "cli".to_string(),
                 dry_run,
                 head_sha: None,
+                from_webhook: false,
                 messages: vec![openreview::workflow::ThreadMessage {
                     role: "user".to_string(),
                     content: format!("Please review pull request #{pr}"),
@@ -183,5 +190,76 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_isolated_docker_backend(config: &Config) -> Result<()> {
+    use openreview::error::AppError;
+    use std::path::Path;
+    let output = std::process::Command::new("docker")
+        .args(["info", "--format", "{{json .SecurityOptions}}"])
+        .output()
+        .map_err(|e| AppError::Config(format!("Docker execution backend is unavailable: {e}")))?;
+    let security = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() || !security.contains("rootless") {
+        return Err(AppError::Config(
+            "Webhook execution requires a reachable dedicated rootless Docker daemon (DOCKER_HOST); refusing host/rootful execution".into(),
+        ));
+    }
+    let image = std::process::Command::new("docker")
+        .args(["image", "inspect", "openreview-sandbox:latest"])
+        .output()
+        .map_err(|e| AppError::Config(format!("Unable to inspect sandbox image: {e}")))?;
+    if !image.status.success() {
+        return Err(AppError::Config(
+            "Sandbox image missing on isolated daemon; build Dockerfile.sandbox before starting service".into(),
+        ));
+    }
+    // The service runs inside Compose, but the rootless Docker daemon resolves
+    // volume paths on its *own host*. A path visible only in the service
+    // container will otherwise create an empty or inaccessible sandbox mount.
+    let root = Path::new(&config.sandbox_workspace_dir);
+    if !root.is_absolute() || !root.is_dir() {
+        return Err(AppError::Config(format!(
+            "SANDBOX_WORKSPACE_DIR must be an existing absolute directory shared with the rootless Docker host: {}",
+            root.display()
+        )));
+    }
+    let probe = tempfile::Builder::new()
+        .prefix("openreview-docker-probe-")
+        .tempdir_in(root)
+        .map_err(|e| AppError::Config(format!("Sandbox workspace is not writable: {e}")))?;
+    std::fs::write(probe.path().join("probe"), b"sandbox-mount-ready")
+        .map_err(|e| AppError::Config(format!("Cannot initialize sandbox workspace probe: {e}")))?;
+    let probe_result = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--mount",
+            &format!(
+                "type=bind,source={},target=/workspace",
+                probe.path().display()
+            ),
+            "openreview-sandbox:latest",
+            "sh",
+            "-c",
+            "cat /workspace/probe && printf writable > /workspace/probe-write",
+        ])
+        .output()
+        .map_err(|e| AppError::Config(format!("Sandbox mount validation could not run: {e}")))?;
+    if !probe_result.status.success()
+        || probe_result.stdout != b"sandbox-mount-ready"
+        || std::fs::read(probe.path().join("probe-write"))
+            .ok()
+            .as_deref()
+            != Some(b"writable")
+    {
+        return Err(AppError::Config(
+            "Rootless Docker daemon cannot read/write shared sandbox workspace; check matching host paths and permissions".into(),
+        ));
+    }
     Ok(())
 }
