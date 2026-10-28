@@ -87,3 +87,24 @@ jobs:
           workspace="${RUNNER_TEMP:?}/openreview-workspaces"
           mkdir -p "$workspace"
           SANDBOX_WORKSPACE_DIR="$workspace" ./scripts/verify-rootless-sandbox.sh
+      - name: Full read-only agent dry-run against authenticated PR and fake AI endpoint
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_PROVIDER: openai
+          LLM_MODEL: openreview-e2e-mock
+          OPENAI_API_KEY: fake-ci-key-never-used-outside-localhost
+          OPENAI_BASE_URL: http://127.0.0.1:38575
+          SANDBOX_DRIVER: docker
+          BOT_USERNAME: openreview
+        run: |
+          set -euo pipefail
+          export SANDBOX_WORKSPACE_DIR="${RUNNER_TEMP:?}/openreview-workspaces"
+          python3 tests/fixtures/openai_mock_server.py 38575 &
+          mock_pid=$!
+          trap 'kill "$mock_pid" 2>/dev/null || true' EXIT
+          for i in {1..10}; do
+            if curl -s --max-time 1 http://127.0.0.1:38575/ >/dev/null; then break; fi
+            sleep 1
+          done
+          cargo run --locked --release -- action --dry-run
