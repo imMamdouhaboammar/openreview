@@ -38,19 +38,37 @@ sequenceDiagram
 
 ---
 
-## Architectural Comparison: Vercel OpenReview vs OpenReview-RS
+## Core Capabilities for Web Applications
 
-| Dimension | `vercel-labs/openreview` (Original) | `openreview-rs` (Rebuilt) |
-| :--- | :--- | :--- |
-| **Runtime & Language** | Next.js 16 + TypeScript + Node.js (Vercel Serverless) | Compiled Rust binary (Axum + Tokio) |
-| **Sandbox Backend** | Proprietary `@vercel/sandbox` (closed invite-only beta) | Pluggable `SandboxDriver`: Local isolated directory or Docker OCI |
-| **Workflow Engine** | Proprietary `@workflow/ai` (Vercel Workflow cloud service) | Native Tokio async supervisor + state metrics |
-| **Memory Footprint** | ~250MB+ RSS | < 20MB RSS |
-| **Cold Start** | 5 – 15 seconds on serverless | Sub-millisecond (< 1ms) |
-| **LLM Support** | Hardcoded to Anthropic Claude via AI SDK | Universal adapter: Anthropic, OpenAI, Gemini, Ollama, DeepSeek |
-| **Deployment Options** | Vercel Platform only | Docker, Kubernetes, Linux VM, Bare Metal, or Local CLI |
-| **CLI Mode** | None (Webhook only) | Built-in standalone CLI runner (`openreview review --pr <num>`) |
-| **Ecosystem Detection** | Node.js lockfiles only (`bun`, `pnpm`, `yarn`, `npm`) | Polyglot: Rust (`cargo`), Go (`go.mod`), Python (`uv`/`pip`), Node |
+* **On-Demand Precision Review:** Triggered instantly via `@openreview` mentions on any pull request or review comment thread. Evaluates diffs for runtime errors, race conditions, security vulnerabilities, bundle bloat, and regression risks.
+* **One-Click Native Fixes:** Posts line-level comments formatted with standard GitHub ````suggestion```` blocks, enabling developers to review and accept code fixes directly in the GitHub UI.
+* **Autonomous Code Remediation:** Clones the PR branch, executes formatters, linters, and test suites, edits files directly inside an isolated sandbox, and automatically commits and pushes verified fixes.
+* **Reaction-Driven Lifecycle:**
+  * Reacting with 👍 or ❤️ instructs OpenReview to execute and push proposed edits directly to the branch.
+  * Reacting with 👎 or 😕 gracefully cancels the proposed action.
+* **Progressive Skill Intelligence:** Dynamically discovers domain-specific guidelines from `.agents/skills/` (e.g., Next.js 16 conventions, React performance patterns, web accessibility, or Rust/Go microservice rules) and loads full instructions only when relevant.
+
+---
+
+## Who Is This For?
+
+* **Engineering Teams & High-Velocity Startups:** Eliminate human reviewer fatigue on syntax, style, and routine regression checks. Keep PR queues unblocked around the clock.
+* **Open-Source Maintainers:** Automatically triage, lint, and test external contributor pull requests against repository standards before human maintainer time is spent.
+* **Enterprise & Security-Sensitive Organizations:** Teams whose compliance or privacy policies prohibit sending code to closed third-party SaaS review platforms. OpenReview-RS is 100% self-hosted on private Kubernetes clusters, internal Docker hosts, or air-gapped environments.
+* **Platform & DevOps Engineers:** Embed review, formatting, and remediation checks into CI/CD pipelines via CLI mode or self-hosted webhook ingress without third-party vendor lock-in.
+
+---
+
+## The Competitive Edge: Architectural Overhaul vs Original Repo
+
+| Dimension | `vercel-labs/openreview` (Original) | `openreview-rs` (Rebuilt) | Architectural Impact |
+| :--- | :--- | :--- | :--- |
+| **Sandbox Execution** | Proprietary `@vercel/sandbox` (closed invite-only beta, paid Vercel tier). | Pluggable [`SandboxDriver`](file:///Users/mamdouhaboammar/Documents/antigravity/bold-tesla/src/sandbox/traits.rs): Local isolated process runner or Docker OCI containers. | 100% self-hosted freedom. Deploy on any server, VM, or container orchestration platform without proprietary cloud microVM bills. |
+| **LLM Provider Engine** | Hardcoded to Anthropic Claude via Vercel AI SDK. | Universal [`LlmProvider`](file:///Users/mamdouhaboammar/Documents/antigravity/bold-tesla/src/llm/traits.rs) interface supporting Anthropic, OpenAI, Google Gemini, and local Ollama/vLLM endpoints. | Zero provider lock-in. Use existing corporate OpenAI agreements, Gemini quota, or run private offline models (e.g. DeepSeek-R1). |
+| **Runtime & Performance** | Next.js 16 Serverless on Node.js (~250MB+ RSS memory, 5-15s cold starts). | Compiled static Rust binary ([`axum`](file:///Users/mamdouhaboammar/Documents/antigravity/bold-tesla/src/server/routes.rs) + `tokio`). Operates under 20MB RSS with sub-millisecond cold start (<1ms). | Minimal infrastructure overhead, zero timeout failures, and instant webhook response times. |
+| **Deployment Flexibility** | Restricted to Vercel Platform serverless functions. | Single static binary or lightweight multi-stage Docker container (`debian:bookworm-slim`). | Deployable to Kubernetes, AWS ECS, GCP Cloud Run, Fly.io, Hetzner, or bare metal. |
+| **Execution Modes** | Webhook daemon only. | Dual-mode: Webhook daemon (`serve`) + Standalone CLI runner (`review`). | Run reviews directly in local development workspaces or GitHub Actions CI jobs (`openreview review --pr 42`) without exposing a public endpoint. |
+| **Language Ecosystem** | Node.js lockfiles only (`bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package.json`). | Polyglot detection engine: Rust (`Cargo.toml`), Go (`go.mod`), Python (`uv`/`pip`), and Node.js. | First-class support for backend microservices, systems code, and data engineering projects alongside frontend web apps. |
 
 ---
 
