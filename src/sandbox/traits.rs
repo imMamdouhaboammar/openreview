@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::workflow::command::WorkflowMode;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -28,5 +29,6 @@ pub trait SandboxDriver: Send + Sync {
         repo_full_name: &str,
         branch: &str,
         token: &str,
+        mode: WorkflowMode,
     ) -> Result<Box<dyn SandboxInstance>>;
 }

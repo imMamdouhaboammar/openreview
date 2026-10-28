@@ -32,6 +32,7 @@ fn create_test_config() -> Config {
         github_app_private_key: "dummy-key".to_string(),
         github_app_webhook_secret: "test-webhook-secret-xyz".to_string(),
         github_app_installation_id: Some(999),
+        allowed_installation_ids: [8888].into_iter().collect(),
         bot_username: "openreview".to_string(),
         llm_provider: "anthropic".to_string(),
         model_name: "claude-3-7-sonnet-20250219".to_string(),
@@ -365,6 +366,31 @@ async fn test_webhook_signature_and_deduplication() {
         .unwrap();
     let response = app.clone().oneshot(missing_req).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // GitHub's valid HMAC is not permission to run arbitrary installations:
+    // public GitHub Apps can be installed by unknown accounts. They must be
+    // approved by the operator before a job is accepted or a token requested.
+    let mut unapproved_installation = payload.clone();
+    unapproved_installation["installation"]["id"] = json!(9999);
+    let unapproved_bytes = serde_json::to_vec(&unapproved_installation).unwrap();
+    let unapproved_req = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/github")
+        .header("x-github-event", "issue_comment")
+        .header("x-github-delivery", "not-an-approved-installation")
+        .header(
+            "x-hub-signature-256",
+            sign_payload(&secret, &unapproved_bytes),
+        )
+        .body(Body::from(unapproved_bytes))
+        .unwrap();
+    let unapproved_response = app.clone().oneshot(unapproved_req).await.unwrap();
+    assert_eq!(unapproved_response.status(), StatusCode::OK);
+    let data = axum::body::to_bytes(unapproved_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let ignored: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    assert_eq!(ignored["reason"], "installation_not_approved");
 
     let req_valid = Request::builder()
         .method("POST")

@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::sandbox::path::safe_resolve_path;
 use crate::sandbox::traits::{CommandOutput, SandboxDriver, SandboxInstance};
+use crate::workflow::command::WorkflowMode;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -177,6 +178,7 @@ impl SandboxDriver for LocalSandboxDriver {
         repo_full_name: &str,
         branch: &str,
         token: &str,
+        _mode: WorkflowMode,
     ) -> Result<Box<dyn SandboxInstance>> {
         let temp_dir = tempfile::tempdir().map_err(|e| {
             AppError::Sandbox(format!("Failed to allocate temporary directory: {e}"))

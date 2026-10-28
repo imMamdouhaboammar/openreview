@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use std::collections::HashSet;
 use std::env;
 
 // This structure holds installation private keys, webhook HMAC material, and
@@ -9,6 +10,7 @@ pub struct Config {
     pub github_app_private_key: String,
     pub github_app_webhook_secret: String,
     pub github_app_installation_id: Option<u64>,
+    pub allowed_installation_ids: HashSet<u64>,
     pub bot_username: String,
 
     pub llm_provider: String,
@@ -38,6 +40,25 @@ impl Config {
         let github_app_installation_id = env::var("GITHUB_APP_INSTALLATION_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok());
+        // A public GitHub App can be installed by any GitHub account. Signed
+        // webhooks alone do not grant permission to spend this operator's LLM
+        // budget or launch sandboxes. Default deny until explicitly approved.
+        let mut allowed_installation_ids = HashSet::new();
+        if let Ok(ids) = env::var("ALLOWED_INSTALLATION_IDS") {
+            for item in ids.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let id = item.parse::<u64>().map_err(|_| {
+                    AppError::Config(format!(
+                        "Invalid ALLOWED_INSTALLATION_IDS entry '{item}': expected numeric GitHub installation ID"
+                    ))
+                })?;
+                if id == 0 {
+                    return Err(AppError::Config(
+                        "ALLOWED_INSTALLATION_IDS must contain nonzero installation IDs".into(),
+                    ));
+                }
+                allowed_installation_ids.insert(id);
+            }
+        }
 
         let bot_username = env::var("BOT_USERNAME").unwrap_or_else(|_| "openreview".to_string());
 
@@ -87,6 +108,7 @@ impl Config {
             github_app_private_key,
             github_app_webhook_secret,
             github_app_installation_id,
+            allowed_installation_ids,
             bot_username,
             llm_provider,
             model_name,

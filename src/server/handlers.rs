@@ -52,12 +52,27 @@ pub async fn webhook_handler(
     if matches!(event_type, "issue_comment" | "pull_request_review_comment") {
         let envelope: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| AppError::Internal(format!("Invalid webhook envelope: {e}")))?;
-        if envelope
+        let installation_id = envelope
             .pointer("/installation/id")
             .and_then(|v| v.as_u64())
-            .is_none()
+            .ok_or(AppError::MissingInstallationId)?;
+        if !state
+            .config
+            .allowed_installation_ids
+            .contains(&installation_id)
         {
-            return Err(AppError::MissingInstallationId);
+            warn!(
+                "Ignoring webhook from unapproved GitHub installation {}",
+                installation_id
+            );
+            return Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ignored",
+                    "reason": "installation_not_approved"
+                })),
+            )
+                .into_response());
         }
     }
 

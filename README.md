@@ -73,11 +73,11 @@ An authorized collaborator approves a proposed change by leaving an explicit `@o
 
 ## Security Architecture & Sandbox Isolation
 
-1. **Mode Enforcement:** Review mode has no arbitrary shell or file-write tool. Fix mode retains editing and test execution with authorization checks.
+1. **Mode Enforcement:** Review mode has no arbitrary shell or file-write tool and mounts the repository read-only inside Docker. Authorized Fix mode retains a writable repository and test execution.
 2. **Trust Boundary:** The webhook daemon only starts with a dedicated, rootless Docker backend. Local mode is for trusted CLI development; it is not process isolation and cannot publish fixes.
 3. **Credential Isolation:** The untrusted container cannot mount Git metadata, receive installation tokens, or access the service's process environment. The host controls credentials and pushing.
 4. **Path Protection:** File tool paths reject `..`, absolute paths, and symlinks; Docker file operations run inside the container to avoid host path races.
-5. **Container Restrictions:** Job containers have no network, read-only root filesystems, writable workspaces, CPU/memory/PID limits, dropped capabilities, and teardown on drop. Missing offline dependencies block publishing.
+5. **Container Restrictions:** Job containers have no network, read-only root filesystems, a read-only Review workspace (writable only for Fix), CPU/memory/PID limits, dropped capabilities, and teardown on drop. Missing offline dependencies block publishing.
 6. **Job Metadata:** Jobs and deduplication IDs persist in `/data/openreview-jobs.json`. A restart marks interrupted jobs failed; automatic execution replay is intentionally not implemented because partial publishing is not safely idempotent.
 
 ---
@@ -88,7 +88,10 @@ OpenReview natively supports multi-tenant GitHub App deployments:
 * **Dynamic Installation Scoping:** Installation IDs are resolved directly from verified incoming webhooks (`payload.installation.id`).
 * **Isolated Token Manager:** Generates and caches short-lived installation access tokens per installation ID.
 * **Cross-Installation Isolation:** Repositories are validated against the installation token; cross-tenant access is strictly prohibited.
+* **Operator Approval:** `ALLOWED_INSTALLATION_IDS` is a mandatory default-deny *admission policy* for webhook jobs. A valid GitHub webhook signature proves sender authenticity, not that the operator agrees to run code or pay for LLM requests. New installations are ignored until explicitly approved; an empty list accepts no jobs.
 * **CLI Fallback:** Standalone CLI commands use `GITHUB_APP_INSTALLATION_ID` or `GITHUB_TOKEN` without weakening webhook security.
+
+> **GitHub App visibility:** A **Private App** can only be installed on its owning account. To support the same self-hosted App across independent personal accounts and organizations, configure the App as **Public** in GitHub settings *and* approve the intended installation IDs in `ALLOWED_INSTALLATION_IDS`. Public visibility alone must never grant workload access. Each self-hosted operator registers and controls its **own** App credentials; do not distribute a shared central private key to customer-managed servers.
 
 ---
 
@@ -159,7 +162,21 @@ MAX_CONCURRENT_JOBS=10
    curl -f http://localhost:3000/health
    ```
 
-   Place the webhook behind an HTTPS reverse proxy with valid TLS, a stable public DNS name, request-size limits, and access to `/api/webhooks/github`. Only the signed webhook endpoint should be public for event ingestion. Test the configured rootless daemon before accepting untrusted workloads.
+   Compose publishes the service only on the host's loopback interface (`127.0.0.1:3000`). Place it behind an HTTPS reverse proxy with valid TLS, a stable public DNS name, request-size limits, and access to `/api/webhooks/github`. Never expose `/api/jobs`, `/api/jobs/{id}` or `/metrics` to the public internet; access the operator API through an SSH tunnel or a separately authenticated administrative route. Test the configured rootless daemon before accepting untrusted workloads.
+
+   For example, if the VPS uses **Caddy** as its host reverse proxy, this Caddyfile routes public traffic while keeping job/metrics endpoints private:
+
+   ```caddyfile
+   review.example.com {
+       @operator path /api/jobs /api/jobs/* /metrics
+       respond @operator 403
+       reverse_proxy 127.0.0.1:3000
+   }
+   ```
+
+5. Register a GitHub App under your own account or organization in **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**. Use `https://YOUR_DOMAIN/api/webhooks/github` for the webhook URL and a strong webhook secret. Request repository permissions for Contents (read/write), Issues (read/write), Pull requests (read/write) and Metadata (read), subscribing to `issue_comment`, `pull_request_review_comment` and installation lifecycle events. Add the App ID, private key and webhook secret to your server's `.env` only. The `/api/manifest` endpoint is currently a template, **not** a one-click registration flow.
+
+6. Install the App on the desired repositories/accounts. For one owning account, **Private** visibility is sufficient; for *multiple unrelated organizations*, change visibility to **Public** in GitHub before installation. Locate each approved numeric installation ID from GitHub's installation settings or the signed installation webhook; add only those IDs, for example `ALLOWED_INSTALLATION_IDS=123456,789012`, to `.env`. Restart with `docker compose up -d` and verify an authorized `@openreview review` command in a test PR. Unapproved installations receive no jobs, even if their webhook is validly signed.
 
 ### Option 2: Standalone Binary
 

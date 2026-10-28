@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::sandbox::path::safe_resolve_path;
 use crate::sandbox::traits::{CommandOutput, SandboxDriver, SandboxInstance};
+use crate::workflow::command::WorkflowMode;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,6 +23,14 @@ pub struct DockerSandbox {
 }
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn sandbox_mount(work_path: &Path, mode: WorkflowMode) -> String {
+    let mut mount = format!("type=bind,source={},target=/workspace", work_path.display());
+    if mode == WorkflowMode::Review {
+        mount.push_str(",readonly");
+    }
+    mount
+}
 
 fn remove_container(name: &str) {
     let result = std::process::Command::new("docker")
@@ -281,6 +290,7 @@ impl SandboxDriver for DockerSandboxDriver {
         repo_full_name: &str,
         branch: &str,
         token: &str,
+        mode: WorkflowMode,
     ) -> Result<Box<dyn SandboxInstance>> {
         let temp_dir = tempfile::Builder::new()
             .prefix("openreview-job-")
@@ -402,7 +412,7 @@ impl SandboxDriver for DockerSandboxDriver {
                     // to the daemon's unprivileged host UID, not to host root.
                     "--user=0:0",
                     "--mount",
-                    &format!("type=bind,source={},target=/workspace", work_path.display()),
+                    &sandbox_mount(&work_path, mode),
                     "-w",
                     "/workspace",
                     &self.base_image,
@@ -437,6 +447,13 @@ impl SandboxDriver for DockerSandboxDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_mount_is_read_only_but_authorized_fix_mount_is_writable() {
+        let workspace = Path::new("/tmp/example-workspace");
+        assert!(sandbox_mount(workspace, WorkflowMode::Review).ends_with(",readonly"));
+        assert!(!sandbox_mount(workspace, WorkflowMode::Fix).contains("readonly"));
+    }
 
     #[tokio::test]
     async fn trusted_git_metadata_is_kept_outside_untrusted_mount() {

@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use sha2::digest::KeyInit;
 use std::sync::Arc;
-use tracing::{Level, info};
+use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use openreview::cli::{Cli, Commands};
@@ -27,6 +27,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Serve { host, port } => {
             config.validate_for_serve()?;
+            if config.allowed_installation_ids.is_empty() {
+                warn!(
+                    "No GitHub installations approved; configure ALLOWED_INSTALLATION_IDS to process PR commands"
+                );
+            }
             validate_isolated_docker_backend(&config)?;
             let max_concurrent_jobs = config.max_concurrent_jobs;
             info!("Starting OpenReview-RS daemon on {}:{}", host, port);

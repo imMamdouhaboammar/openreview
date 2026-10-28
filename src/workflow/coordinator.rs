@@ -49,9 +49,22 @@ impl WorkflowCoordinator {
         };
 
         // 1. Acquire Installation Token (Strict multi-installation scoping)
-        let token = if params.from_webhook && params.installation_id.is_none() {
-            return Err(AppError::MissingInstallationId);
-        } else if let Some(installation_id) = params.installation_id {
+        if params.from_webhook {
+            let installation_id = params
+                .installation_id
+                .ok_or(AppError::MissingInstallationId)?;
+            if !self
+                .config
+                .allowed_installation_ids
+                .contains(&installation_id)
+            {
+                return Err(AppError::Unauthorized(
+                    "GitHub App installation has not been approved by this self-hosted operator"
+                        .into(),
+                ));
+            }
+        }
+        let token = if let Some(installation_id) = params.installation_id {
             info!(
                 "Acquiring installation token for installation {} on {}",
                 installation_id, params.repo_full_name
@@ -206,7 +219,12 @@ impl WorkflowCoordinator {
         // 6. Create Ephemeral Sandbox & Clone Branch
         let sandbox = self
             .sandbox_driver
-            .create_sandbox(&params.repo_full_name, &params.pr_branch, &token)
+            .create_sandbox(
+                &params.repo_full_name,
+                &params.pr_branch,
+                &token,
+                params.mode,
+            )
             .await?;
         let work_dir = sandbox.work_dir().to_path_buf();
 

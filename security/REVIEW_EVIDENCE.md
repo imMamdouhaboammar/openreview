@@ -1,10 +1,10 @@
 # PR #1 Security Verification Evidence
 
-Verified against source tree `f918ef35ca5da6d94875553df4310b3b1de0b694`
-(GitHub commit `2f19fb476b3bfce6ba9ee901eedde6fd8f13fe39`), on
-2026-10-28. This is **evidence of the checks actually executed**, not a
-certification of the runtime isolation boundary. A subsequent documentation
-commit does not change the executable source tree.
+Verified on 2026-10-28, including the code at GitHub remediation commit
+`2f19fb476b3bfce6ba9ee901eedde6fd8f13fe39` and the subsequent
+Review-only read-only Docker mount patch. This is **evidence of the checks
+actually executed**, not a certification of the runtime isolation boundary.
+The final head must be independently checked by GitHub Actions as well.
 
 ## Tools, commands, and results
 
@@ -12,7 +12,7 @@ commit does not change the executable source tree.
 | --- | --- | --- | --- |
 | Rust 1.99.1 rustfmt | `cargo fmt --check` | Entire Rust workspace: formatted | 0 |
 | Rust 1.99.1 Clippy | `cargo clippy --all-targets -- -D warnings` | All Rust targets: no warnings | 0 |
-| Rust 1.99.1 test runner | `cargo test --all` | 45 unit and 19 integration tests: 64 passed, zero ignored/failed | 0 |
+| Rust 1.99.1 test runner | `cargo test --all` | 46 unit and 19 integration tests: 65 passed, zero ignored/failed | 0 |
 | Rust 1.99.1 compiler | `cargo build --release` | Release binary built | 0 |
 | cargo-audit 0.22.2 / RustSec (1,381 cached advisories) | `cargo audit --no-fetch --db /root/.cargo/advisory-db` | 260 Cargo.lock dependencies; zero known vulnerabilities. One **allowed warning**, RUSTSEC-2024-0449 (`unsafe-libyaml` 0.2.11 unmaintained via `serde_yaml`) | 0 |
 | Git | `git diff --check` | Changed source lines: no whitespace errors | 0 |
@@ -37,7 +37,7 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
 
 | Risk | Code boundary | Regressions and result |
 | --- | --- | --- |
-| Review-mode shell, Git, or network side effects | `agent/tools.rs`, `agent/runner.rs` | Shell/write tools absent; dispatch rejects unexpected calls; commands attempting shell redirection, commit/push and HTTP POST cannot mutate review workspace |
+| Review-mode shell, Git, or network side effects | `agent/tools.rs`, `agent/runner.rs`, `sandbox/docker.rs` | Shell/write tools absent; dispatch rejects unexpected calls; commands attempting shell redirection, commit/push and HTTP POST cannot mutate review workspace; Docker Review workspace bind mount marked `readonly`, Fix remains writable (mount-argument test) |
 | Unauthorized Fix publication | `workflow/coordinator.rs`, `workflow/publisher.rs` | Fix requires app client, proper collaborator rights, and a verified PR head; publisher refuses unauthenticated clients, Review mode, and dry runs do not push |
 | No tests mistaken for success | `workflow/verification.rs` | `Unavailable` is non-passing and blocks publication; test asserts zero checks is not success |
 | Secret exposure via untrusted repository skills | `skills/discovery.rs` | Symlinked skill directories and SKILL.md files rejected; test attempts reading outside workspace |
@@ -46,6 +46,7 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
 | Webhook spoofing and duplicated deliveries | `github/webhook.rs`, `server/handlers.rs`, `jobs/manager.rs` | Invalid HMAC rejected; signed duplicate delivery accepted once; state and dedup survive restart; concurrent admissions result in one job |
 | Sensitive job metadata disclosure | `server/handlers.rs` | Missing and invalid operator bearer tokens yield 401 on both API endpoints; permissive CORS removed |
 | Multi-installation token cross-use | `github/auth.rs`, `workflow/coordinator.rs` | Cached installation tokens keyed by installation ID; targeted invalidation tested; signed webhook without installation metadata refused |
+| Public App installation abuse | `server/handlers.rs`, `config.rs` | Signed webhook bearing an installation ID outside operator-approved `ALLOWED_INSTALLATION_IDS` is ignored before job admission; regression test covers an unapproved installation while an approved one still receives jobs |
 | Unicode panic during truncation | `workflow/context.rs`, `workflow/verification.rs` | Multibyte-boundary tests pass |
 
 ## Findings, risk acceptance, and release blockers
@@ -73,6 +74,9 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
    trusted deployment operators, not installation-scoped customer access.
    Protect it at the ingress proxy. Reaction-based approvals and native inline
    suggestions are not implemented or advertised as working.
+   Public GitHub App registration additionally requires explicit installation
+   approval through `ALLOWED_INSTALLATION_IDS` (default deny), so external
+   installations cannot schedule jobs merely by installing the App.
 6. ECC Tools' Security Evidence heuristic still requested scanner evidence at
    the initial remediation head, despite real RustSec and test results. This
    report records those results and limitations; it does not claim that an ECC
