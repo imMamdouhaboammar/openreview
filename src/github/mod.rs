@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod client;
+pub mod registration;
 pub mod types;
 pub mod webhook;
 

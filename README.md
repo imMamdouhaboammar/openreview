@@ -143,10 +143,25 @@ MAX_CONCURRENT_JOBS=10
 
 ### Option 1: Docker Compose (Recommended for Production)
 
-1. Clone the repository and configure `.env`:
+1. Choose a public DNS name, for example `review.example.com`, pointing to your VPS. **Register your own GitHub App using a prefilled GitHub registration link** (no credentials or tokens are sent to OpenReview):
+
+   ```bash
+   # Build once using the VPS's normal Docker service-image builder.
+   docker build -t openreview-service:local .
+   docker run --rm openreview-service:local github-app-url \
+     --domain https://review.example.com --name "OpenReview MyTeam"
+   # For installation on multiple independent accounts / organizations, add --public.
+   # To register the App under an organization, add --org MY_ORG.
+   ```
+
+   Open the printed `github.com` link, review the permissions/events, and create the App. GitHub still requires you to **set a strong webhook secret, note the App ID and generate a private key** in its App settings. GitHub's URL-parameter registration does not support setting a webhook secret; this is deliberately not automated. This is a prefilled setup link, **not** a completed GitHub registration or a manifest-code conversion flow ([GitHub documentation](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-using-url-parameters)). A unique name may be required if your first choice is taken. Install the App into a test repository to obtain its numeric installation ID.
+
+   Configure `.env` with the GitHub values, your LLM key, a random `JOB_API_TOKEN` of at least 32 characters, and only the installation IDs you explicitly authorize. Keep the private key on the host; do not paste it into GitHub issues or logs.
+
    ```bash
    cp .env.example .env
-   # Edit .env with your credentials
+   # Edit .env with the registered App ID, escaped PEM private key, webhook secret,
+   # allowed installation IDs, LLM API key, job API token and sandbox paths.
    ```
 
 2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Rootless Docker needs **cgroup v2 with systemd cgroup driver** to enforce the configured memory, CPU and PID limits; startup and job admission reject unsupported configurations ([Docker's resource-limit documentation](https://docs.docker.com/engine/security/rootless/tips/#limiting-resources)). Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
@@ -178,9 +193,9 @@ MAX_CONCURRENT_JOBS=10
    }
    ```
 
-5. Register a GitHub App under your own account or organization in **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**. Use `https://YOUR_DOMAIN/api/webhooks/github` for the webhook URL and a strong webhook secret. Request repository permissions for Contents (read/write), Issues (read/write), Pull requests (read/write) and Metadata (read), subscribing to `issue_comment`, `pull_request_review_comment` and installation lifecycle events. Add the App ID, private key and webhook secret to your server's `.env` only. The `/api/manifest` endpoint is currently a template, **not** a one-click registration flow.
+5. In GitHub App settings, verify that webhook URL is `https://YOUR_DOMAIN/api/webhooks/github`, the secret matches `.env`, and repository permissions include Contents (read/write), Issues (read/write), Pull requests (read/write) and Metadata (read). Confirm events include `issue_comment`, `pull_request`, `pull_request_review_comment`, `installation` and `installation_repositories`. The `/api/manifest` endpoint remains a reference template only.
 
-6. Install the App on the desired repositories/accounts. For one owning account, **Private** visibility is sufficient; for *multiple unrelated organizations*, change visibility to **Public** in GitHub before installation. Locate each approved numeric installation ID from GitHub's installation settings or the signed installation webhook; add only those IDs, for example `ALLOWED_INSTALLATION_IDS=123456,789012`, to `.env`. Restart with `docker compose up -d` and verify an authorized `@openreview review` command in a test PR. Unapproved installations receive no jobs, even if their webhook is validly signed.
+6. Install the App on the desired repositories/accounts. For one owning account, **Private** visibility is sufficient; for *multiple unrelated organizations*, change visibility to **Public** in GitHub before installation. Locate each approved numeric installation ID from GitHub's installation settings or the signed installation webhook; add only those IDs, for example `ALLOWED_INSTALLATION_IDS=123456,789012`, to `.env`. Restart with `docker compose up -d` and verify an authorized `@openreview review` command in a test PR. Unapproved installations receive no jobs, even if their webhook is validly signed. Before any authorized `@openreview fix`, separately confirm the bot has installation-scoped write permission and the rootless sandbox security smoke test passes on the real daemon.
 
 ### Option 2: Standalone Binary
 
@@ -216,7 +231,16 @@ openreview review --repo owner/my-repo --pr 42 --dry-run
 
 ---
 
-## GitHub App Registration (Manual Setup)
+## GitHub App Registration (Prefilled URL or Manual Setup)
+
+Generate the personalized setup URL locally with:
+
+```bash
+openreview github-app-url --domain https://review.example.com --name "OpenReview MyTeam"
+# Add --org ORG when the organization will own it; add --public for cross-account installs.
+```
+
+This command runs without any GitHub credentials or `.env`. It prints a URL to GitHub's own registration form, with permissions, webhook URL and events preselected. It cannot set the webhook secret or obtain a private key. If you prefer manual registration:
 
 1. Navigate to `https://github.com/settings/apps/new`.
 2. Configure your webhook URL: `https://YOUR_DOMAIN/api/webhooks/github`.
@@ -233,13 +257,13 @@ openreview review --repo owner/my-repo --pr 42 --dry-run
 4. Generate a private key (`.pem`) and note your App ID and Webhook Secret.
 5. Choose "Only on this account" by default. Multi-organization operators can choose "Any account" explicitly, with an installation policy and LLM cost controls.
 6. Inspect `GET /api/manifest` as a reference template. It contains a placeholder webhook URL and does not implement GitHub's manifest-registration POST/redirect flow.
-7. Every self-hosted deployment must register and secure its **own** GitHub App and private key. Do not distribute one shared App private key to other operators.
+7. Every self-hosted deployment must register and secure its **own** GitHub App and private key. Do not distribute one shared App private key to other operators. For production, the URL generator has unit coverage but GitHub's live registration form must still be verified by the deploying operator.
 
 ---
 
 ## Testing & Verification
 
-Run the comprehensive automated test suite (51 tests):
+Run the comprehensive automated test suite:
 ```bash
 cargo test
 ```

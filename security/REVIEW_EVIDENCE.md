@@ -1,10 +1,11 @@
 # PR #1 Security Verification Evidence
 
-Verified on 2026-10-28, including the code at GitHub remediation commit
-`2f19fb476b3bfce6ba9ee901eedde6fd8f13fe39` and the subsequent
-Review-only read-only Docker mount patch. This is **evidence of the checks
-actually executed**, not a certification of the runtime isolation boundary.
-The final head must be independently checked by GitHub Actions as well.
+Verified on 2026-10-28, including GitHub remediation commit
+`ca02adabdcbe997ac53b18020c5fa0d703e345dd` and the later
+GitHub App prefilled registration-URL generator. This is **evidence of the
+checks actually executed**, not a certification of the runtime isolation
+boundary. The final pushed head must be independently checked by GitHub
+Actions as well.
 
 ## Tools, commands, and results
 
@@ -12,7 +13,7 @@ The final head must be independently checked by GitHub Actions as well.
 | --- | --- | --- | --- |
 | Rust 1.99.1 rustfmt | `cargo fmt --check` | Entire Rust workspace: formatted | 0 |
 | Rust 1.99.1 Clippy | `cargo clippy --all-targets -- -D warnings` | All Rust targets: no warnings | 0 |
-| Rust 1.99.1 test runner | `cargo test --all` | 47 library unit, 1 binary unit, and 19 integration tests: 67 passed, zero ignored/failed | 0 |
+| Rust 1.99.1 test runner | `cargo test --all` | 51 library unit, 1 binary unit, and 19 integration tests: **71 passed**, zero ignored/failed | 0 |
 | Rust 1.99.1 compiler | `cargo build --release` | Release binary built | 0 |
 | cargo-audit 0.22.2 / RustSec (1,381 cached advisories) | `cargo audit --no-fetch --db /root/.cargo/advisory-db` | 260 Cargo.lock dependencies; zero known vulnerabilities. One **allowed warning**, RUSTSEC-2024-0449 (`unsafe-libyaml` 0.2.11 unmaintained via `serde_yaml`) | 0 |
 | Git | `git diff --check` | Changed source lines: no whitespace errors | 0 |
@@ -22,6 +23,7 @@ The final head must be independently checked by GitHub Actions as well.
 | Docker CLI | `docker --version`, `docker compose config`, `docker build -f Dockerfile -t openreview-service:verify .` | Not available in local runner (`docker: command not found`) | 127 each |
 | Bash syntax check | `bash -n scripts/verify-rootless-sandbox.sh` | New rootless-runtime smoke script parses correctly, but **was not executed successfully** against Docker | 0 |
 | Rootless smoke runner | `SANDBOX_WORKSPACE_DIR=/tmp ./scripts/verify-rootless-sandbox.sh` | Refused with `Docker CLI is unavailable`. This is a failed prerequisite, **not a passing isolation test** | 2 |
+| OpenReview binary | `cargo run --quiet -- github-app-url --domain https://review.example.org --name 'OpenReview Mamdouh' --org my-org --public` | Generated a GitHub-owned HTTPS registration link using only public configuration. Four new tests cover parameter accuracy, organization/public choice and invalid domain input. GitHub's live form was **not** submitted or independently exercised | 0 |
 
 Exact pattern-based secret scan:
 
@@ -29,11 +31,13 @@ Exact pattern-based secret scan:
 rg -l '(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,}|-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----)' src tests .github README.md Dockerfile docker-compose.yml .env.example
 ```
 
-**Independent CI:** [GitHub Actions run 40672591152](https://github.com/imMamdouhaboammar/openreview/actions/runs/40672591152)
-passed on the exact executable head `2f19fb4`: Rust formatting, Clippy, all
+**Independent CI:** [GitHub Actions run 40676759171](https://github.com/imMamdouhaboammar/openreview/actions/runs/40676759171)
+passed on the previous head `ca02ada`: Rust formatting, Clippy, all
 tests, release build, RustSec audit, service Docker build, sandbox Docker build,
-and Compose static configuration validation. This does **not** run the sandbox
-inside a real rootless Docker daemon or verify a live GitHub App installation.
+Compose static configuration validation, and rootless-smoke-script syntax.
+The next head containing the registration-URL generator requires its own CI.
+None of these runs tests the sandbox inside a real rootless Docker daemon or
+verifies a live GitHub App installation.
 
 ## Security regressions and actual mitigations
 
@@ -50,6 +54,7 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
 | Multi-installation token cross-use | `github/auth.rs`, `workflow/coordinator.rs` | Cached installation tokens keyed by installation ID; targeted invalidation tested; signed webhook without installation metadata refused |
 | Public App installation abuse | `server/handlers.rs`, `config.rs` | Signed webhook bearing an installation ID outside operator-approved `ALLOWED_INSTALLATION_IDS` is ignored before job admission; regression test covers an unapproved installation while an approved one still receives jobs |
 | Unicode panic during truncation | `workflow/context.rs`, `workflow/verification.rs` | Multibyte-boundary tests pass |
+| Unsafe or malformed self-hosted App registration links | `github/registration.rs`, `cli.rs` | GitHub-owned prefilled form, HTTPS origin validation, GitHub organization slug validation, no App credentials/registration secrets or untrusted redirects in the link; four regression tests pass. Live GitHub registration not performed |
 
 ## Findings, risk acceptance, and release blockers
 
@@ -83,11 +88,10 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
    Public GitHub App registration additionally requires explicit installation
    approval through `ALLOWED_INSTALLATION_IDS` (default deny), so external
    installations cannot schedule jobs merely by installing the App.
-6. ECC Tools' Security Evidence heuristic still requested scanner evidence at
-   the initial remediation head, despite real RustSec and test results. This
-   report records those results and limitations; it does not claim that an ECC
-   Check or SARIF upload succeeded. GitHub App Checks permission may be needed
-   for the separate integration to publish a check.
+6. ECC Tools' Security Evidence gate reported **passed** at `ca02ada`, after
+   the initial remediation head requested further evidence. The ECC GitHub App
+   separately lacked permission to publish a GitHub Check, so no ECC Check or
+   SARIF upload is claimed. The next pushed head must be checked again.
 
 **Release decision:** do not merge until unproven live security boundaries,
 required reviews, and branch policies are independently verified.

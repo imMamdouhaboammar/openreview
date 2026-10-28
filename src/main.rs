@@ -22,6 +22,24 @@ async fn main() -> Result<()> {
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     let cli = Cli::parse();
+    if let Commands::GithubAppUrl {
+        domain,
+        name,
+        org,
+        public,
+    } = &cli.command
+    {
+        println!(
+            "{}",
+            openreview::github::registration::github_app_registration_url(
+                domain,
+                name,
+                org.as_deref(),
+                *public,
+            )?
+        );
+        return Ok(());
+    }
     let config = Config::from_env()?;
 
     match cli.command {
@@ -132,6 +150,7 @@ async fn main() -> Result<()> {
 
             println!("\nConfiguration check complete.");
         }
+        Commands::GithubAppUrl { .. } => unreachable!("handled before reading credentials"),
         Commands::TestWebhook { url, pr, repo } => {
             info!("Sending test signed webhook to {url}");
             let secret = if config.github_app_webhook_secret.is_empty() {

@@ -43,6 +43,25 @@ pub enum Commands {
     /// Verify local configuration and credential validity
     VerifyConfig,
 
+    /// Generate a GitHub-owned registration link prefilled for this self-hosted deployment
+    GithubAppUrl {
+        /// Public HTTPS origin where the webhook will be hosted, e.g. https://review.example.com
+        #[arg(long)]
+        domain: String,
+
+        /// Unique GitHub App display name (set by the deployment owner)
+        #[arg(long)]
+        name: String,
+
+        /// Register under a GitHub organization instead of your personal account
+        #[arg(long)]
+        org: Option<String>,
+
+        /// Make the App installable by other accounts and organizations
+        #[arg(long)]
+        public: bool,
+    },
+
     /// Test sending a synthetic signed webhook to a running daemon
     TestWebhook {
         /// Webhook URL to target
@@ -57,4 +76,34 @@ pub enum Commands {
         #[arg(long, default_value = "example/repo")]
         repo: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn registration_link_is_a_first_class_command_without_github_credentials() {
+        let args = Cli::try_parse_from([
+            "openreview",
+            "github-app-url",
+            "--domain",
+            "https://review.example.org",
+            "--name",
+            "OpenReview for Mamdouh",
+            "--org",
+            "my-org",
+            "--public",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::GithubAppUrl {
+                public: true,
+                org: Some(_),
+                ..
+            }
+        ));
+    }
 }
