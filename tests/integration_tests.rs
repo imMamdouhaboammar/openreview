@@ -50,6 +50,17 @@ fn create_test_config() -> Config {
     }
 }
 
+#[test]
+fn explicit_invalid_job_concurrency_is_not_silently_defaulted() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .arg("verify-config")
+        .env("MAX_CONCURRENT_JOBS", "not-a-number")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "invalid limit must fail startup");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("MAX_CONCURRENT_JOBS"));
+}
+
 fn sign_payload(secret: &str, body: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(body);
@@ -783,6 +794,7 @@ async fn test_pr_context_formatting() {
         is_fork: true,
         diff: "diff --git a/src/lib.rs b/src/lib.rs\n+ safe_code();".to_string(),
         changed_files: vec![openreview::github::types::ChangedFile {
+            previous_filename: None,
             filename: "src/lib.rs".to_string(),
             status: "modified".to_string(),
             additions: 1,

@@ -5,6 +5,8 @@ use crate::workflow::command::WorkflowMode;
 use crate::workflow::params::WorkflowParams;
 use crate::workflow::verification::ProjectVerifier;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -23,6 +25,32 @@ pub struct PublishAuditRecord {
 }
 
 pub struct WorkflowPublisher;
+
+/// GitHub can briefly expose the previous PR head after a successful Git push.
+/// Report success only after observing the requested SHA, but allow a bounded
+/// period of API propagation instead of incorrectly claiming a failed push.
+async fn confirm_published_sha(
+    gh: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    published_sha: &str,
+) -> Result<()> {
+    let mut last_observed = String::new();
+    for attempt in 0..5 {
+        match gh.get_pull_request(owner, repo, pr_number).await {
+            Ok(pr) if pr.head.sha == published_sha => return Ok(()),
+            Ok(pr) => last_observed = pr.head.sha,
+            Err(error) => last_observed = error.to_string(),
+        }
+        if attempt < 4 {
+            sleep(Duration::from_millis(250 * (attempt + 1))).await;
+        }
+    }
+    Err(AppError::Workflow(format!(
+        "Push returned successfully but remote PR head could not be confirmed: expected {published_sha}, last observed {last_observed}. Check GitHub before retrying to avoid duplicate publication"
+    )))
+}
 
 impl WorkflowPublisher {
     pub async fn evaluate_and_publish(
@@ -197,13 +225,7 @@ impl WorkflowPublisher {
             )));
         }
         let published_sha = rev_out.stdout.trim().to_string();
-        let confirmed_pr = gh.get_pull_request(owner, repo, params.pr_number).await?;
-        if confirmed_pr.head.sha != published_sha {
-            return Err(AppError::Workflow(format!(
-                "Push result not confirmed: expected {published_sha}, GitHub reports {}",
-                confirmed_pr.head.sha
-            )));
-        }
+        confirm_published_sha(gh, owner, repo, params.pr_number, &published_sha).await?;
 
         info!(
             "Successfully published fix commit {} to {} on branch {}",
@@ -240,5 +262,51 @@ impl WorkflowPublisher {
             success: true,
             reason: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn github_pr_head_eventual_consistency_is_retried_before_reporting_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for head in ["old-head", "new-head"] {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 2048];
+                let bytes = connection.read(&mut request).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..bytes])
+                        .contains("GET /repos/owner/repo/pulls/7")
+                );
+                let body = serde_json::json!({
+                    "id": 1,
+                    "number": 7,
+                    "title": "Review",
+                    "head": {"ref": "feature", "sha": head, "repo": null},
+                    "base": {"ref": "main", "sha": "base", "repo": null},
+                    "html_url": "https://github.com/owner/repo/pull/7",
+                    "user": {"id": 1, "login": "owner"}
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                connection.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client =
+            GitHubClient::with_base_url("test-token".into(), format!("http://{addr}")).unwrap();
+        confirm_published_sha(&client, "owner", "repo", 7, "new-head")
+            .await
+            .unwrap();
+        server.await.unwrap();
     }
 }

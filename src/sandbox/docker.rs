@@ -23,6 +23,7 @@ pub struct DockerSandbox {
 }
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Rootless Docker may accept --memory/--cpus/--pids-limit while leaving the
 /// cgroup controller unset. Never execute untrusted code in that state.
@@ -102,6 +103,33 @@ impl Drop for ContainerCreationGuard {
 }
 
 impl DockerSandbox {
+    async fn run_command_with_limit(
+        &self,
+        cmd: &str,
+        args: &[&str],
+        limit: Duration,
+    ) -> Result<CommandOutput> {
+        let mut docker_args = vec!["exec", "-w", "/workspace", &self.container_name, cmd];
+        docker_args.extend_from_slice(args);
+
+        let output = timeout(
+            limit,
+            Command::new("docker")
+                .args(&docker_args)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| AppError::Sandbox(format!("Docker command timed out after {limit:?}")))?
+        .map_err(|e| AppError::Sandbox(format!("Docker exec failed: {e}")))?;
+
+        Ok(CommandOutput {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+
     fn trusted_git(&self, args: &[&str]) -> Command {
         let mut command = Command::new("git");
         command
@@ -165,29 +193,17 @@ impl SandboxInstance for DockerSandbox {
         if cmd == "git" && args == ["rev-parse", "HEAD"] {
             return self.trusted_git_checked(args).await;
         }
-        let mut docker_args = vec!["exec", "-w", "/workspace", &self.container_name, cmd];
-        docker_args.extend_from_slice(args);
-
-        let output = timeout(
-            COMMAND_TIMEOUT,
-            Command::new("docker")
-                .args(&docker_args)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| AppError::Sandbox("Docker exec timed out".into()))?
-        .map_err(|e| AppError::Sandbox(format!("Docker exec failed: {e}")))?;
-
-        Ok(CommandOutput {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
+        self.run_command_with_limit(cmd, args, COMMAND_TIMEOUT)
+            .await
     }
 
     async fn run_bash(&self, script: &str) -> Result<CommandOutput> {
         self.run_command("bash", &["-c", script]).await
+    }
+
+    async fn run_verification(&self, script: &str) -> Result<CommandOutput> {
+        self.run_command_with_limit("bash", &["-c", script], VERIFICATION_TIMEOUT)
+            .await
     }
 
     async fn read_file(&self, path: &str) -> Result<String> {

@@ -15,6 +15,11 @@ pub struct CommandOutput {
 pub trait SandboxInstance: Send + Sync {
     async fn run_command(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput>;
     async fn run_bash(&self, script: &str) -> Result<CommandOutput>;
+    /// Verification has a longer bounded budget than untrusted agent tools.
+    /// Drivers without a separate limit can reuse their existing command path.
+    async fn run_verification(&self, script: &str) -> Result<CommandOutput> {
+        self.run_bash(script).await
+    }
     async fn read_file(&self, path: &str) -> Result<String>;
     async fn write_file(&self, path: &str, content: &str) -> Result<()>;
     async fn has_uncommitted_changes(&self) -> Result<bool>;
