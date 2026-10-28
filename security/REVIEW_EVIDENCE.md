@@ -12,7 +12,7 @@ The final head must be independently checked by GitHub Actions as well.
 | --- | --- | --- | --- |
 | Rust 1.99.1 rustfmt | `cargo fmt --check` | Entire Rust workspace: formatted | 0 |
 | Rust 1.99.1 Clippy | `cargo clippy --all-targets -- -D warnings` | All Rust targets: no warnings | 0 |
-| Rust 1.99.1 test runner | `cargo test --all` | 46 unit and 19 integration tests: 65 passed, zero ignored/failed | 0 |
+| Rust 1.99.1 test runner | `cargo test --all` | 47 library unit, 1 binary unit, and 19 integration tests: 67 passed, zero ignored/failed | 0 |
 | Rust 1.99.1 compiler | `cargo build --release` | Release binary built | 0 |
 | cargo-audit 0.22.2 / RustSec (1,381 cached advisories) | `cargo audit --no-fetch --db /root/.cargo/advisory-db` | 260 Cargo.lock dependencies; zero known vulnerabilities. One **allowed warning**, RUSTSEC-2024-0449 (`unsafe-libyaml` 0.2.11 unmaintained via `serde_yaml`) | 0 |
 | Git | `git diff --check` | Changed source lines: no whitespace errors | 0 |
@@ -20,6 +20,8 @@ The final head must be independently checked by GitHub Actions as well.
 | OpenReview binary | `./target/release/openreview verify-config` | Configuration inspection succeeded; fake/missing live credentials reported as warnings | 0 |
 | OpenReview binary | `GITHUB_APP_ID=test GITHUB_APP_PRIVATE_KEY=dummy GITHUB_APP_WEBHOOK_SECRET=dummy ANTHROPIC_API_KEY=dummy JOB_API_TOKEN=ci-only-token-abcdefghijklmnopqrstuvwxyz012345 ./target/release/openreview serve --host 127.0.0.1 --port 4000` | Refused startup without a Docker execution backend (safe failure) | 1, expected |
 | Docker CLI | `docker --version`, `docker compose config`, `docker build -f Dockerfile -t openreview-service:verify .` | Not available in local runner (`docker: command not found`) | 127 each |
+| Bash syntax check | `bash -n scripts/verify-rootless-sandbox.sh` | New rootless-runtime smoke script parses correctly, but **was not executed successfully** against Docker | 0 |
+| Rootless smoke runner | `SANDBOX_WORKSPACE_DIR=/tmp ./scripts/verify-rootless-sandbox.sh` | Refused with `Docker CLI is unavailable`. This is a failed prerequisite, **not a passing isolation test** | 2 |
 
 Exact pattern-based secret scan:
 
@@ -59,7 +61,11 @@ inside a real rootless Docker daemon or verify a live GitHub App installation.
    **Actual network/process/filesystem isolation, token confinement, shared
    path permissions, timeout/cancellation cleanup, and a complete Fix push have
    not been verified against a running rootless daemon.** Passing image builds
-   alone cannot close this gap.
+   alone cannot close this gap. `scripts/verify-rootless-sandbox.sh` was added
+   as an operator-executed smoke test; it has **not** been run successfully in
+   this runner because Docker is unavailable. The service now also refuses a
+   rootless daemon without systemd cgroup v2 and checks actual per-container
+   memory, PID and CPU controllers before letting untrusted tools execute.
 3. The runner prohibits binding a localhost HTTP listener (EPERM). Tests that
    would have simulated GitHub permission responses over HTTP could not run;
    they were not counted as passing. The non-network checks validate permission

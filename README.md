@@ -149,13 +149,17 @@ MAX_CONCURRENT_JOBS=10
    # Edit .env with your credentials
    ```
 
-2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
+2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Rootless Docker needs **cgroup v2 with systemd cgroup driver** to enforce the configured memory, CPU and PID limits; startup and job admission reject unsupported configurations ([Docker's resource-limit documentation](https://docs.docker.com/engine/security/rootless/tips/#limiting-resources)). Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
 
 3. Build the execution image **on that rootless daemon**, then start the service:
    ```bash
    DOCKER_HOST=unix:///run/user/10001/docker.sock docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
+   DOCKER_HOST=unix:///run/user/10001/docker.sock SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces \
+     ./scripts/verify-rootless-sandbox.sh
    docker compose up -d
    ```
+
+   The rootless security smoke test must pass on the **actual Docker host** before serving untrusted jobs. It exercises read-only Review mounts, writable Fix mounts, effective resource limits, disabled networking, absence of injected App tokens and cleanup. Passing this script does not replace real GitHub App permissions and Fix publication integration tests.
 
 4. Verify service health:
    ```bash

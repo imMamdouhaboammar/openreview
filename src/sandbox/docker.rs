@@ -24,6 +24,49 @@ pub struct DockerSandbox {
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Rootless Docker may accept --memory/--cpus/--pids-limit while leaving the
+/// cgroup controller unset. Never execute untrusted code in that state.
+fn resource_limits_enforced(memory: &str, pids: &str, cpu: &str) -> bool {
+    let mem = memory.trim().parse::<u64>().ok();
+    let pids = pids.trim().parse::<u64>().ok();
+    let mut cpu_parts = cpu.split_whitespace();
+    let quota = cpu_parts.next().and_then(|v| v.parse::<u64>().ok());
+    let period = cpu_parts.next().and_then(|v| v.parse::<u64>().ok());
+    matches!(mem, Some(n) if n > 0 && n <= 2 * 1024 * 1024 * 1024)
+        && matches!(pids, Some(n) if n > 0 && n <= 100)
+        && matches!((quota, period), (Some(q), Some(p)) if q > 0 && p > 0 && p.checked_mul(2).is_some_and(|max| q <= max))
+        && cpu_parts.next().is_none()
+}
+
+async fn verify_container_limits(container: &str) -> Result<()> {
+    let mut values = Vec::with_capacity(3);
+    for file in ["memory.max", "pids.max", "cpu.max"] {
+        let path = format!("/sys/fs/cgroup/{file}");
+        let output = timeout(
+            COMMAND_TIMEOUT,
+            Command::new("docker")
+                .args(["exec", container, "cat", &path])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| AppError::Sandbox("Container resource check timed out".into()))?
+        .map_err(|e| AppError::Sandbox(format!("Container resource check failed: {e}")))?;
+        if !output.status.success() {
+            return Err(AppError::Sandbox(format!(
+                "Cannot inspect isolated container {file}: cgroup constraints unproven"
+            )));
+        }
+        values.push(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    if !resource_limits_enforced(&values[0], &values[1], &values[2]) {
+        return Err(AppError::Sandbox(
+            "Isolated Docker did not enforce configured memory, CPU and PIDs limits".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn sandbox_mount(work_path: &Path, mode: WorkflowMode) -> String {
     let mut mount = format!("type=bind,source={},target=/workspace", work_path.display());
     if mode == WorkflowMode::Review {
@@ -398,6 +441,7 @@ impl SandboxDriver for DockerSandboxDriver {
                 .args([
                     "run",
                     "-d",
+                    "--rm",
                     "--name",
                     &container_name,
                     "--memory=2g",
@@ -432,6 +476,10 @@ impl SandboxDriver for DockerSandboxDriver {
             ));
         }
 
+        // The launch guard removes the container even when this check fails.
+        // No untrusted tools run until all three controllers are verified.
+        verify_container_limits(&container_name).await?;
+
         cleanup_guard.armed = false;
 
         Ok(Box::new(DockerSandbox {
@@ -453,6 +501,27 @@ mod tests {
         let workspace = Path::new("/tmp/example-workspace");
         assert!(sandbox_mount(workspace, WorkflowMode::Review).ends_with(",readonly"));
         assert!(!sandbox_mount(workspace, WorkflowMode::Fix).contains("readonly"));
+    }
+
+    #[test]
+    fn container_limits_must_be_enforced_not_silently_ignored() {
+        assert!(resource_limits_enforced(
+            "2147483648\n",
+            "100\n",
+            "200000 100000\n"
+        ));
+        assert!(!resource_limits_enforced("max", "100", "200000 100000"));
+        assert!(!resource_limits_enforced(
+            "2147483648",
+            "max",
+            "200000 100000"
+        ));
+        assert!(!resource_limits_enforced("2147483648", "100", "max 100000"));
+        assert!(!resource_limits_enforced(
+            "2147483648",
+            "100",
+            "300000 100000"
+        ));
     }
 
     #[tokio::test]

@@ -211,6 +211,17 @@ fn validate_isolated_docker_backend(config: &Config) -> Result<()> {
             "Webhook execution requires a reachable dedicated rootless Docker daemon (DOCKER_HOST); refusing host/rootful execution".into(),
         ));
     }
+    let cgroups = std::process::Command::new("docker")
+        .args(["info", "--format", "{{.CgroupDriver}}/{{.CgroupVersion}}"])
+        .output()
+        .map_err(|e| AppError::Config(format!("Unable to inspect Docker cgroup support: {e}")))?;
+    if !cgroups.status.success()
+        || !effective_cgroup_driver(&String::from_utf8_lossy(&cgroups.stdout))
+    {
+        return Err(AppError::Config(
+            "Rootless Docker must use systemd cgroup driver and cgroup v2; otherwise memory, CPU and process limits may be silently ignored".into(),
+        ));
+    }
     let image = std::process::Command::new("docker")
         .args(["image", "inspect", "openreview-sandbox:latest"])
         .output()
@@ -267,4 +278,20 @@ fn validate_isolated_docker_backend(config: &Config) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn effective_cgroup_driver(info: &str) -> bool {
+    info.trim() == "systemd/2"
+}
+
+#[cfg(test)]
+mod docker_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn refuse_rootless_daemon_without_enforced_cgroup_driver() {
+        assert!(effective_cgroup_driver("systemd/2\n"));
+        assert!(!effective_cgroup_driver("none/2"));
+        assert!(!effective_cgroup_driver("systemd/1"));
+    }
 }
