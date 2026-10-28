@@ -69,8 +69,18 @@ impl LlmProvider for GeminiProvider {
         };
 
         let mut contents: Vec<Value> = Vec::new();
+        let mut pending_function_responses: Vec<Value> = Vec::new();
 
         for msg in messages {
+            // One Gemini model turn may request several tools in parallel.
+            // Their results belong to a single user content with one part per call.
+            // Flush before any non-tool message to preserve conversation boundaries.
+            if msg.role != MessageRole::Tool && !pending_function_responses.is_empty() {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": std::mem::take(&mut pending_function_responses)
+                }));
+            }
             match msg.role {
                 MessageRole::User => {
                     contents.push(json!({
@@ -115,20 +125,24 @@ impl LlmProvider for GeminiProvider {
                         })
                         .map(|call| call.name.as_str())
                         .unwrap_or("tool_result");
-                    // Gemini requires a user role for function responses, with
-                    // the original function name (not the opaque tool-call ID).
-                    contents.push(json!({
-                        "role": "user",
-                        "parts": [{
-                            "functionResponse": {
-                                "name": function_name,
-                                "response": { "output": msg.content }
-                            }
-                        }]
+                    // Function responses use the original function name, not
+                    // an internal tool-call ID. Keep parallel results as parts
+                    // of the same user content rather than separate messages.
+                    pending_function_responses.push(json!({
+                        "functionResponse": {
+                            "name": function_name,
+                            "response": { "output": msg.content }
+                        }
                     }));
                 }
                 MessageRole::System => {}
             }
+        }
+        if !pending_function_responses.is_empty() {
+            contents.push(json!({
+                "role": "user",
+                "parts": pending_function_responses
+            }));
         }
 
         let mut body = json!({

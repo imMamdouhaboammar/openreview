@@ -65,9 +65,12 @@ including message history, responses, and tool calls. They do **not** guarantee
 that the upstream model implements tool/function calling correctly; verify
 your model with a controlled test PR before enabling Fix.
 
-The `gemini` adapter sends an explicit `role: user` and turns tool results into
-Google `functionResponse` parts. The custom `responses` adapter handles
-OpenAI `function_call` and `function_call_output` items.
+The `gemini` adapter sends tool results as Google `functionResponse` parts,
+groups parallel responses into one `role: user` content, and replays the
+opaque `thoughtSignature` attached to each model function-call part. These
+details are required by Gemini thinking models in multi-step tool workflows.
+The custom `responses` adapter handles OpenAI `function_call` and
+`function_call_output` items.
 
 **Security:** `OPENCODE_CUSTOM_URL` must be an HTTPS
 `opencode.ai/inference/custom/conn_<id>` URL. Arbitrary hosts, credentials in

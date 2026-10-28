@@ -159,6 +159,73 @@ async fn gemini_replays_the_exact_thought_signature_on_the_tool_result_turn() {
 }
 
 #[tokio::test]
+async fn gemini_groups_parallel_tool_responses_into_one_user_content() {
+    let (first_base, first_server) = mock_once(
+        |_, body| assert_eq!(body["contents"][0]["parts"][0]["text"], "inspect both files"),
+        r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"readFile","args":{"path":"a.rs"}},"thoughtSignature":"gemini-parallel-signature"},{"functionCall":{"name":"readFile","args":{"path":"b.rs"}}}]}}],"usageMetadata":{}}"#,
+    )
+    .await;
+    let first_provider = GeminiProvider::new("scoped-key".into(), "gemini-3.8-flash".into())
+        .unwrap()
+        .with_opencode_custom(first_base)
+        .unwrap();
+    let first = first_provider
+        .complete("", &[ChatMessage::user("inspect both files")], &[])
+        .await
+        .unwrap();
+    first_server.await.unwrap();
+    assert_eq!(first.tool_calls.len(), 2);
+
+    let (second_base, second_server) = mock_once(
+        |_, body| {
+            let contents = body["contents"].as_array().unwrap();
+            assert_eq!(
+                contents.len(),
+                3,
+                "parallel results must be one user content with two functionResponse parts"
+            );
+            assert_eq!(contents[1]["parts"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                contents[1]["parts"][0]["thoughtSignature"],
+                "gemini-parallel-signature"
+            );
+            assert!(contents[1]["parts"][1].get("thoughtSignature").is_none());
+            assert_eq!(contents[2]["role"], "user");
+            assert_eq!(contents[2]["parts"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                contents[2]["parts"][0]["functionResponse"]["response"]["output"],
+                "A content"
+            );
+            assert_eq!(
+                contents[2]["parts"][1]["functionResponse"]["response"]["output"],
+                "B content"
+            );
+        },
+        r#"{"candidates":[{"content":{"parts":[{"text":"Reviewed both files"}]}}],"usageMetadata":{}}"#,
+    )
+    .await;
+    let second_provider = GeminiProvider::new("scoped-key".into(), "gemini-3.8-flash".into())
+        .unwrap()
+        .with_opencode_custom(second_base)
+        .unwrap();
+    let reply = second_provider
+        .complete(
+            "",
+            &[
+                ChatMessage::user("inspect both files"),
+                ChatMessage::assistant_with_tools(None, first.tool_calls.clone()),
+                ChatMessage::tool_result(&first.tool_calls[0].id, "A content"),
+                ChatMessage::tool_result(&first.tool_calls[1].id, "B content"),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.content.as_deref(), Some("Reviewed both files"));
+    second_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn custom_chat_uses_the_unversioned_connection_path() {
     let (base, server) = mock_once(
         |headers, body| {
