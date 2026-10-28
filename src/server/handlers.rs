@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde_json::json;
@@ -10,8 +10,10 @@ use tracing::{error, info, warn};
 use crate::error::AppError;
 use crate::github::types::{IssueCommentPayload, PullRequestReviewCommentPayload, ReactionPayload};
 use crate::github::verify_signature;
+use crate::jobs::JobStatus;
 use crate::server::state::AppState;
 use crate::workflow::WorkflowParams;
+use crate::workflow::command::{WorkflowMode, parse_bot_command};
 
 pub async fn webhook_handler(
     State(state): State<AppState>,
@@ -23,7 +25,7 @@ pub async fn webhook_handler(
         .webhooks_received
         .fetch_add(1, Ordering::Relaxed);
 
-    // 1. Signature Verification
+    // 1. Signature Verification (Constant-Time HMAC SHA-256)
     let signature_header = headers
         .get("x-hub-signature-256")
         .and_then(|h| h.to_str().ok())
@@ -40,130 +42,270 @@ pub async fn webhook_handler(
         return Err(AppError::InvalidWebhookSignature);
     }
 
-    // 2. Identify Event Type
+    // 2. Delivery Idempotency and Deduplication
+    let delivery_id = headers
+        .get("x-github-delivery")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    if !delivery_id.is_empty() {
+        if state.jobs.is_delivery_processed(&delivery_id).await {
+            info!("Duplicate webhook delivery {} ignored", delivery_id);
+            return Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ignored",
+                    "reason": "duplicate_delivery",
+                    "delivery_id": delivery_id
+                })),
+            )
+                .into_response());
+        }
+        state.jobs.register_delivery(&delivery_id).await;
+    }
+
+    // 3. Identify Event Type
     let event_type = headers
         .get("x-github-event")
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default();
-
-    let bot_mention = format!("@{}", state.config.bot_username.to_lowercase());
 
     match event_type {
         "issue_comment" => {
             let payload: IssueCommentPayload = serde_json::from_slice(&body)
                 .map_err(|e| AppError::Internal(format!("Failed to parse issue_comment: {e}")))?;
 
-            if payload.action == "created" && payload.issue.pull_request.is_some() {
-                let comment_lower = payload.comment.body.to_lowercase();
-                if comment_lower.contains(&bot_mention) {
-                    info!(
-                        "Bot mentioned in issue comment #{} on repo {}",
-                        payload.issue.number, payload.repository.full_name
-                    );
+            if payload.action == "created"
+                && payload.issue.pull_request.is_some()
+                && let Some(cmd) =
+                    parse_bot_command(&payload.comment.body, &state.config.bot_username)
+            {
+                let installation_id = payload.installation.map(|i| i.id);
+                let repo_full_name = payload.repository.full_name.clone();
+                let pr_number = payload.issue.number;
+                let comment_id = payload.comment.id;
+                let actor = payload.comment.user.login.clone();
+                let comment_body = payload.comment.body.clone();
 
-                    let coordinator = state.coordinator.clone();
-                    let metrics = state.metrics.clone();
-                    let repo_full_name = payload.repository.full_name.clone();
-                    let pr_number = payload.issue.number;
-                    let comment_id = payload.comment.id;
-                    let comment_body = payload.comment.body.clone();
+                info!(
+                    "Bot commanded ({:?}) by @{} in comment #{} on repo {}",
+                    cmd.mode, actor, pr_number, repo_full_name
+                );
 
-                    metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
+                let job = state
+                    .jobs
+                    .create_job(
+                        &delivery_id,
+                        "issue_comment",
+                        &repo_full_name,
+                        pr_number,
+                        installation_id,
+                        &actor,
+                        cmd.mode,
+                    )
+                    .await?;
 
-                    tokio::spawn(async move {
-                        let params = WorkflowParams {
-                            repo_full_name: repo_full_name.clone(),
-                            pr_number,
-                            base_branch: "main".to_string(), // will resolve dynamically in client
-                            pr_branch: "HEAD".to_string(),
-                            comment_id: Some(comment_id),
-                            messages: vec![crate::workflow::ThreadMessage {
-                                role: "user".to_string(),
-                                content: comment_body,
-                            }],
-                        };
+                let coordinator = state.coordinator.clone();
+                let metrics = state.metrics.clone();
+                let jobs = state.jobs.clone();
+                let job_id = job.id.clone();
+                let mode = cmd.mode;
 
-                        match coordinator.execute_bot_workflow(params).await {
-                            Ok(_) => {
-                                metrics.reviews_completed.fetch_add(1, Ordering::Relaxed);
-                                info!("Successfully completed review workflow for PR #{pr_number}");
-                            }
-                            Err(e) => {
-                                metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
-                                error!("Review workflow failed for PR #{pr_number}: {e}");
+                metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
+
+                tokio::spawn(async move {
+                    let sem = jobs.semaphore();
+                    let _permit = sem.acquire().await;
+                    jobs.update_status(&job_id, JobStatus::Running, None).await;
+
+                    let params = WorkflowParams {
+                        repo_full_name: repo_full_name.clone(),
+                        pr_number,
+                        base_branch: "main".to_string(),
+                        pr_branch: "HEAD".to_string(),
+                        comment_id: Some(comment_id),
+                        installation_id,
+                        mode,
+                        actor: actor.clone(),
+                        dry_run: false,
+                        head_sha: None,
+                        messages: vec![crate::workflow::ThreadMessage {
+                            role: "user".to_string(),
+                            content: if !cmd.prompt.is_empty() {
+                                cmd.prompt
+                            } else {
+                                comment_body
+                            },
+                        }],
+                    };
+
+                    match coordinator.execute_bot_workflow(params).await {
+                        Ok(res) => {
+                            if res.success {
+                                jobs.update_status(&job_id, JobStatus::Completed, None)
+                                    .await;
+                                if mode == WorkflowMode::Fix {
+                                    metrics.fixes_completed.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    metrics.reviews_completed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                info!(
+                                    "Job {} completed successfully for PR #{}",
+                                    job_id, pr_number
+                                );
+                            } else {
+                                let err = res.error_message.unwrap_or_else(|| {
+                                    "Agent loop terminated with error".to_string()
+                                });
+                                jobs.update_status(&job_id, JobStatus::Failed, Some(err.clone()))
+                                    .await;
+                                if mode == WorkflowMode::Fix {
+                                    metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                warn!("Job {} finished with failure: {}", job_id, err);
                             }
                         }
-                        metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
-                    });
+                        Err(e) => {
+                            jobs.update_status(&job_id, JobStatus::Failed, Some(e.to_string()))
+                                .await;
+                            if mode == WorkflowMode::Fix {
+                                metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            error!("Job {} encountered critical error: {}", job_id, e);
+                        }
+                    }
+                    metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
+                });
 
-                    return Ok((
-                        StatusCode::ACCEPTED,
-                        Json(json!({
-                            "status": "accepted",
-                            "message": "Review workflow enqueued"
-                        })),
-                    )
-                        .into_response());
-                }
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(json!({
+                        "status": "accepted",
+                        "job_id": job.id,
+                        "delivery_id": delivery_id,
+                        "mode": mode.to_string()
+                    })),
+                )
+                    .into_response());
             }
         }
         "pull_request_review_comment" => {
             let payload: PullRequestReviewCommentPayload = serde_json::from_slice(&body)
                 .map_err(|e| AppError::Internal(format!("Failed to parse review_comment: {e}")))?;
 
-            if payload.action == "created" {
-                let comment_lower = payload.comment.body.to_lowercase();
-                if comment_lower.contains(&bot_mention) {
-                    info!(
-                        "Bot mentioned in PR review comment on {} #{}",
-                        payload.repository.full_name, payload.pull_request.number
-                    );
+            if payload.action == "created"
+                && let Some(cmd) =
+                    parse_bot_command(&payload.comment.body, &state.config.bot_username)
+            {
+                let installation_id = payload.installation.map(|i| i.id);
+                let repo_full_name = payload.repository.full_name.clone();
+                let pr_number = payload.pull_request.number;
+                let comment_id = payload.comment.id;
+                let actor = payload.comment.user.login.clone();
+                let base_branch = payload.pull_request.base.r#ref.clone();
+                let pr_branch = payload.pull_request.head.r#ref.clone();
+                let head_sha = payload.pull_request.head.sha.clone();
+                let comment_body = payload.comment.body.clone();
 
-                    let coordinator = state.coordinator.clone();
-                    let metrics = state.metrics.clone();
-                    let repo_full_name = payload.repository.full_name.clone();
-                    let pr_number = payload.pull_request.number;
-                    let comment_id = payload.comment.id;
-                    let comment_body = payload.comment.body.clone();
-                    let base_branch = payload.pull_request.base.r#ref.clone();
-                    let pr_branch = payload.pull_request.head.r#ref.clone();
+                let job = state
+                    .jobs
+                    .create_job(
+                        &delivery_id,
+                        "pull_request_review_comment",
+                        &repo_full_name,
+                        pr_number,
+                        installation_id,
+                        &actor,
+                        cmd.mode,
+                    )
+                    .await?;
 
-                    metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
+                let coordinator = state.coordinator.clone();
+                let metrics = state.metrics.clone();
+                let jobs = state.jobs.clone();
+                let job_id = job.id.clone();
+                let mode = cmd.mode;
 
-                    tokio::spawn(async move {
-                        let params = WorkflowParams {
-                            repo_full_name,
-                            pr_number,
-                            base_branch,
-                            pr_branch,
-                            comment_id: Some(comment_id),
-                            messages: vec![crate::workflow::ThreadMessage {
-                                role: "user".to_string(),
-                                content: comment_body,
-                            }],
-                        };
+                metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
 
-                        match coordinator.execute_bot_workflow(params).await {
-                            Ok(_) => {
-                                metrics.reviews_completed.fetch_add(1, Ordering::Relaxed);
-                            }
-                            Err(e) => {
-                                metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
-                                error!("Review workflow failed: {e}");
+                tokio::spawn(async move {
+                    let sem = jobs.semaphore();
+                    let _permit = sem.acquire().await;
+                    jobs.update_status(&job_id, JobStatus::Running, None).await;
+
+                    let params = WorkflowParams {
+                        repo_full_name,
+                        pr_number,
+                        base_branch,
+                        pr_branch,
+                        comment_id: Some(comment_id),
+                        installation_id,
+                        mode,
+                        actor,
+                        dry_run: false,
+                        head_sha: Some(head_sha),
+                        messages: vec![crate::workflow::ThreadMessage {
+                            role: "user".to_string(),
+                            content: if !cmd.prompt.is_empty() {
+                                cmd.prompt
+                            } else {
+                                comment_body
+                            },
+                        }],
+                    };
+
+                    match coordinator.execute_bot_workflow(params).await {
+                        Ok(res) => {
+                            if res.success {
+                                jobs.update_status(&job_id, JobStatus::Completed, None)
+                                    .await;
+                                if mode == WorkflowMode::Fix {
+                                    metrics.fixes_completed.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    metrics.reviews_completed.fetch_add(1, Ordering::Relaxed);
+                                }
+                            } else {
+                                let err = res.error_message.unwrap_or_else(|| {
+                                    "Agent loop terminated with error".to_string()
+                                });
+                                jobs.update_status(&job_id, JobStatus::Failed, Some(err))
+                                    .await;
+                                if mode == WorkflowMode::Fix {
+                                    metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                         }
-                        metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
-                    });
+                        Err(e) => {
+                            jobs.update_status(&job_id, JobStatus::Failed, Some(e.to_string()))
+                                .await;
+                            if mode == WorkflowMode::Fix {
+                                metrics.fixes_failed.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                metrics.reviews_failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            error!("Review workflow failed: {e}");
+                        }
+                    }
+                    metrics.active_workflows.fetch_sub(1, Ordering::Relaxed);
+                });
 
-                    return Ok((
-                        StatusCode::ACCEPTED,
-                        Json(json!({
-                            "status": "accepted",
-                            "message": "Review workflow enqueued"
-                        })),
-                    )
-                        .into_response());
-                }
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(json!({
+                        "status": "accepted",
+                        "job_id": job.id,
+                        "delivery_id": delivery_id,
+                        "mode": mode.to_string()
+                    })),
+                )
+                    .into_response());
             }
         }
         "reaction" => {
@@ -177,17 +319,21 @@ pub async fn webhook_handler(
                 let repo = payload.repository.full_name.clone();
                 let reaction = payload.reaction.content.clone();
                 let user_login = payload.reaction.user.login.clone();
+                let installation_id = payload.installation.map(|i| i.id);
 
                 tokio::spawn(async move {
-                    let _ = coordinator
+                    if let Err(e) = coordinator
                         .handle_reaction_event(
                             &repo,
-                            0, // will resolve via comment thread
+                            installation_id,
                             comment.id,
                             &reaction,
                             &user_login,
                         )
-                        .await;
+                        .await
+                    {
+                        warn!("Reaction event handling error: {e}");
+                    }
                 });
 
                 return Ok((
@@ -196,6 +342,18 @@ pub async fn webhook_handler(
                 )
                     .into_response());
             }
+        }
+        "installation" | "installation_repositories" => {
+            // Handle App installation lifecycle changes
+            info!("Received GitHub App installation lifecycle event: {event_type}");
+            return Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "status": "lifecycle_acknowledged",
+                    "event": event_type
+                })),
+            )
+                .into_response());
         }
         _ => {}
     }
@@ -208,6 +366,43 @@ pub async fn webhook_handler(
         })),
     )
         .into_response())
+}
+
+pub async fn get_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::jobs::JobRecord>, AppError> {
+    match state.jobs.get_job(&id).await {
+        Some(job) => Ok(Json(job)),
+        None => Err(AppError::Workflow(format!("Job '{id}' not found"))),
+    }
+}
+
+pub async fn list_jobs_handler(State(state): State<AppState>) -> Json<Vec<crate::jobs::JobRecord>> {
+    Json(state.jobs.list_jobs().await)
+}
+
+pub async fn manifest_handler() -> Json<serde_json::Value> {
+    Json(json!({
+        "name": "OpenReview AI Agent",
+        "url": "https://github.com/imMamdouhaboammar/openreview",
+        "hook_attributes": {
+            "url": "https://YOUR_DOMAIN/api/webhooks/github"
+        },
+        "redirect_url": "https://YOUR_DOMAIN/",
+        "public": true,
+        "default_permissions": {
+            "pull_requests": "write",
+            "issues": "write",
+            "contents": "write",
+            "metadata": "read"
+        },
+        "default_events": [
+            "issue_comment",
+            "pull_request",
+            "pull_request_review_comment"
+        ]
+    }))
 }
 
 pub async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -226,8 +421,10 @@ pub async fn health_handler(State(state): State<AppState>) -> Json<serde_json::V
 pub async fn metrics_handler(State(state): State<AppState>) -> Response {
     let uptime = state.metrics.start_time.elapsed().as_secs();
     let webhooks = state.metrics.webhooks_received.load(Ordering::Relaxed);
-    let completed = state.metrics.reviews_completed.load(Ordering::Relaxed);
-    let failed = state.metrics.reviews_failed.load(Ordering::Relaxed);
+    let rev_completed = state.metrics.reviews_completed.load(Ordering::Relaxed);
+    let rev_failed = state.metrics.reviews_failed.load(Ordering::Relaxed);
+    let fix_completed = state.metrics.fixes_completed.load(Ordering::Relaxed);
+    let fix_failed = state.metrics.fixes_failed.load(Ordering::Relaxed);
     let active = state.metrics.active_workflows.load(Ordering::Relaxed);
 
     let metrics_text = format!(
@@ -243,10 +440,16 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP openreview_reviews_failed_total Total failed reviews\n\
          # TYPE openreview_reviews_failed_total counter\n\
          openreview_reviews_failed_total {}\n\
-         # HELP openreview_active_workflows Current active review workflows\n\
+         # HELP openreview_fixes_completed_total Total successful code fixes\n\
+         # TYPE openreview_fixes_completed_total counter\n\
+         openreview_fixes_completed_total {}\n\
+         # HELP openreview_fixes_failed_total Total failed code fixes\n\
+         # TYPE openreview_fixes_failed_total counter\n\
+         openreview_fixes_failed_total {}\n\
+         # HELP openreview_active_workflows Current active workflows\n\
          # TYPE openreview_active_workflows gauge\n\
          openreview_active_workflows {}\n",
-        uptime, webhooks, completed, failed, active
+        uptime, webhooks, rev_completed, rev_failed, fix_completed, fix_failed, active
     );
 
     (
@@ -305,12 +508,13 @@ pub async fn root_handler(State(state): State<AppState>) -> Html<String> {
 <body>
     <div class="card">
         <h1>OpenReview-RS <span class="badge">Online</span></h1>
-        <p>High-performance self-hosted AI code review bot and microservice in Rust.</p>
+        <p>Production-ready self-hosted AI code review and fix agent in Rust.</p>
         <ul>
             <li><span class="label">LLM Provider</span> <code>{}</code></li>
             <li><span class="label">Active Model</span> <code>{}</code></li>
             <li><span class="label">Sandbox Driver</span> <code>{}</code></li>
             <li><span class="label">Webhook Path</span> <code>/api/webhooks/github</code></li>
+            <li><span class="label">App Manifest</span> <a href="/api/manifest" style="color:#3b82f6">/api/manifest</a></li>
             <li><span class="label">Health Check</span> <a href="/health" style="color:#3b82f6">/health</a></li>
             <li><span class="label">Metrics</span> <a href="/metrics" style="color:#3b82f6">/metrics</a></li>
         </ul>

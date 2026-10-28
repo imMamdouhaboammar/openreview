@@ -99,4 +99,45 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn validate_llm_credentials(&self) -> Result<()> {
+        match self.llm_provider.as_str() {
+            "anthropic" => {
+                if self.anthropic_api_key.as_deref().unwrap_or("").is_empty() {
+                    return Err(AppError::Config(
+                        "ANTHROPIC_API_KEY is required for Anthropic provider".to_string(),
+                    ));
+                }
+            }
+            "openai" => {
+                if self.openai_api_key.as_deref().unwrap_or("").is_empty() {
+                    return Err(AppError::Config(
+                        "OPENAI_API_KEY is required for OpenAI provider".to_string(),
+                    ));
+                }
+            }
+            "gemini" => {
+                if self.gemini_api_key.as_deref().unwrap_or("").is_empty() {
+                    return Err(AppError::Config(
+                        "GEMINI_API_KEY is required for Gemini provider".to_string(),
+                    ));
+                }
+            }
+            "ollama" => {
+                // Ollama local endpoint requires no API key
+            }
+            other => {
+                return Err(AppError::Config(format!(
+                    "Unsupported LLM provider '{other}'. Supported: anthropic, openai, gemini, ollama"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_serve(&self) -> Result<()> {
+        self.validate_github_credentials()?;
+        self.validate_llm_credentials()?;
+        Ok(())
+    }
 }

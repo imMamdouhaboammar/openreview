@@ -269,4 +269,135 @@ impl GitHubClient {
         }
         Ok(())
     }
+
+    pub async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/repos/{owner}/{repo}/collaborators/{username}/permission",
+            self.base_url
+        );
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            AppError::GitHubApi(format!("Failed to query collaborator permission: {e}"))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "Collaborator permission query failed ({status}): {body}"
+            )));
+        }
+
+        let payload: crate::github::types::CollaboratorPermissionResponse =
+            resp.json().await.map_err(|e| {
+                AppError::GitHubApi(format!(
+                    "Failed to parse collaborator permission payload: {e}"
+                ))
+            })?;
+
+        Ok(payload.permission)
+    }
+
+    pub async fn get_pull_request_diff(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<String> {
+        let url = format!("{}/repos/{owner}/{repo}/pulls/{pr_number}", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .header(ACCEPT, "application/vnd.github.v3.diff")
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch PR diff: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "PR diff fetch failed ({status}): {text}"
+            )));
+        }
+
+        resp.text()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to read PR diff body: {e}")))
+    }
+
+    pub async fn get_pull_request_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<crate::github::types::ChangedFile>> {
+        let url = format!(
+            "{}/repos/{owner}/{repo}/pulls/{pr_number}/files",
+            self.base_url
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch PR files: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "PR files fetch failed ({status}): {text}"
+            )));
+        }
+
+        resp.json::<Vec<crate::github::types::ChangedFile>>()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to parse PR files: {e}")))
+    }
+
+    pub async fn get_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+    ) -> Result<crate::github::types::IssueCommentDetail> {
+        let url = format!(
+            "{}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            self.base_url
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch issue comment: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "Issue comment query failed ({status}): {text}"
+            )));
+        }
+
+        resp.json::<crate::github::types::IssueCommentDetail>()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to parse issue comment: {e}")))
+    }
+}
+
+pub fn is_permission_authorized_for_fix(permission: &str) -> bool {
+    matches!(
+        permission.to_lowercase().as_str(),
+        "admin" | "write" | "maintain"
+    )
+}
+
+pub fn extract_number_from_url(url: &str) -> Option<u64> {
+    url.rsplit('/').next()?.parse::<u64>().ok()
 }

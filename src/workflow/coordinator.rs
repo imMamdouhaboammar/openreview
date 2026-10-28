@@ -1,13 +1,18 @@
 use crate::agent::runner::{AgentRunResult, AgentRunner};
 use crate::config::Config;
 use crate::error::{AppError, Result};
-use crate::github::auth::get_installation_token;
-use crate::github::client::GitHubClient;
+use crate::github::auth::TokenManager;
+use crate::github::client::{
+    GitHubClient, extract_number_from_url, is_permission_authorized_for_fix,
+};
 use crate::llm::traits::LlmProvider;
 use crate::llm::types::ChatMessage;
 use crate::sandbox::traits::SandboxDriver;
 use crate::skills::discover_skills;
+use crate::workflow::command::WorkflowMode;
+use crate::workflow::context::PullRequestContext;
 use crate::workflow::params::WorkflowParams;
+use crate::workflow::publisher::WorkflowPublisher;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -16,6 +21,7 @@ pub struct WorkflowCoordinator {
     pub llm: Arc<dyn LlmProvider>,
     pub sandbox_driver: Arc<dyn SandboxDriver>,
     pub http_client: reqwest::Client,
+    pub token_manager: TokenManager,
 }
 
 impl WorkflowCoordinator {
@@ -29,10 +35,11 @@ impl WorkflowCoordinator {
             llm,
             sandbox_driver,
             http_client: reqwest::Client::new(),
+            token_manager: TokenManager::new(),
         }
     }
 
-    pub async fn execute_bot_workflow(&self, params: WorkflowParams) -> Result<AgentRunResult> {
+    pub async fn execute_bot_workflow(&self, mut params: WorkflowParams) -> Result<AgentRunResult> {
         let [owner, repo] = match params.repo_full_name.split_once('/') {
             Some((o, r)) => [o, r],
             None => {
@@ -43,15 +50,31 @@ impl WorkflowCoordinator {
             }
         };
 
-        // 1. Acquire Installation Token
-        let token = if let Some(installation_id) = self.config.github_app_installation_id {
-            get_installation_token(
-                &self.http_client,
-                &self.config.github_app_id,
-                &self.config.github_app_private_key,
-                installation_id,
-            )
-            .await?
+        // 1. Acquire Installation Token (Strict multi-installation scoping)
+        let token = if let Some(installation_id) = params.installation_id {
+            info!(
+                "Acquiring installation token for installation {} on {}",
+                installation_id, params.repo_full_name
+            );
+            self.token_manager
+                .get_token(
+                    &self.http_client,
+                    &self.config.github_app_id,
+                    &self.config.github_app_private_key,
+                    installation_id,
+                )
+                .await?
+        } else if let Some(fallback_id) = self.config.github_app_installation_id {
+            // Standalone legacy single-installation or CLI fallback only
+            info!("Using configured fallback installation ID {}", fallback_id);
+            self.token_manager
+                .get_token(
+                    &self.http_client,
+                    &self.config.github_app_id,
+                    &self.config.github_app_private_key,
+                    fallback_id,
+                )
+                .await?
         } else {
             // Standalone or personal access token fallback if configured
             std::env::var("GITHUB_TOKEN").unwrap_or_default()
@@ -63,8 +86,65 @@ impl WorkflowCoordinator {
             None
         };
 
-        // 2. Check Push Access Permissions
+        // 2. Validate Repository Belongs to Installation
         if let Some(gh) = &gh_client {
+            let repo_data = gh.get_repository(owner, repo).await.map_err(|e| {
+                AppError::Unauthorized(format!(
+                    "Repository {}/{} is not accessible with installation token: {}",
+                    owner, repo, e
+                ))
+            })?;
+
+            if repo_data.archived && params.mode == WorkflowMode::Fix {
+                return Err(AppError::Workflow(
+                    "Repository is archived; modifications are prohibited".to_string(),
+                ));
+            }
+        }
+
+        // 3. Authorization Gate: Check caller permission for Fix mode
+        if params.mode == WorkflowMode::Fix
+            && !params.actor.is_empty()
+            && let Some(gh) = &gh_client
+        {
+            let permission = match gh
+                .get_collaborator_permission(owner, repo, &params.actor)
+                .await
+            {
+                Ok(perm) => perm,
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch collaborator permission for {}: {}",
+                        params.actor, e
+                    );
+                    "none".to_string()
+                }
+            };
+
+            if !is_permission_authorized_for_fix(&permission) {
+                let reject_msg = format!(
+                    "## ⛔ Fix Request Denied\n\nUser `@{}` has `{}` permission on repository `{}/{}`. Autonomous code fixing requires `write`, `maintain`, or `admin` access.\n\nTo request changes, please ask a repository collaborator with write access to approve or comment `@{} fix`.\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*",
+                    params.actor, permission, owner, repo, self.config.bot_username
+                );
+                let _ = gh
+                    .post_comment(owner, repo, params.pr_number, &reject_msg)
+                    .await;
+                return Err(AppError::Unauthorized(format!(
+                    "User '{}' does not have write access to repository (has '{}')",
+                    params.actor, permission
+                )));
+            }
+            info!(
+                "User '{}' authorized for Fix mode (permission: '{}')",
+                params.actor, permission
+            );
+        }
+
+        // 4. Check Push Access Permissions if Fix mode is requested
+        if params.mode == WorkflowMode::Fix
+            && !params.dry_run
+            && let Some(gh) = &gh_client
+        {
             let push_check = gh
                 .check_push_access(owner, repo, &params.pr_branch, &self.config.bot_username)
                 .await?;
@@ -73,7 +153,7 @@ impl WorkflowCoordinator {
                     .reason
                     .unwrap_or_else(|| "Push access denied".to_string());
                 let message = format!(
-                    "## Skipped\n\nUnable to access this branch: {reason}\n\nPlease ensure the OpenReview app has write access to this repository and branch.\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*"
+                    "## Skipped\n\nUnable to push to this branch: {reason}\n\nPlease ensure the OpenReview app has write access to this repository and branch.\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*"
                 );
                 let _ = gh
                     .post_comment(owner, repo, params.pr_number, &message)
@@ -82,14 +162,35 @@ impl WorkflowCoordinator {
             }
         }
 
-        // 3. Create Sandbox & Clone Branch
+        // 5. Fetch Authoritative Pull Request Context
+        let pr_context = if let Some(gh) = &gh_client {
+            match PullRequestContext::fetch(gh, owner, repo, params.pr_number).await {
+                Ok(ctx) => {
+                    params.head_sha = Some(ctx.head_sha.clone());
+                    params.pr_branch = ctx.head_branch.clone();
+                    params.base_branch = ctx.base_branch.clone();
+                    Some(ctx)
+                }
+                Err(e) => {
+                    warn!(
+                        "Could not fetch full PR context via GitHub API: {}; proceeding with default branches",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // 6. Create Ephemeral Sandbox & Clone Branch
         let sandbox = self
             .sandbox_driver
             .create_sandbox(&params.repo_full_name, &params.pr_branch, &token)
             .await?;
         let work_dir = sandbox.work_dir().to_path_buf();
 
-        // 4. Discover Skills (local repo + server defaults)
+        // 7. Discover Skills
         let skill_paths = [
             work_dir.join(".agents").join("skills"),
             work_dir.join(".skills"),
@@ -103,16 +204,23 @@ impl WorkflowCoordinator {
             params.repo_full_name
         );
 
-        // 5. Run ReAct Agent
-        let initial_messages: Vec<ChatMessage> =
-            params.messages.into_iter().map(Into::into).collect();
+        // 8. Run ReAct Agent with Mode Restrictions
+        let initial_messages: Vec<ChatMessage> = params
+            .messages
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect();
         let runner = AgentRunner::new(
             sandbox.as_ref(),
             gh_client.as_ref(),
             self.llm.as_ref(),
             &params.repo_full_name,
             params.pr_number,
+            params.mode,
+            params.dry_run,
             &skills,
+            pr_context.as_ref(),
         );
 
         let agent_result = match runner.run(initial_messages).await {
@@ -131,39 +239,27 @@ impl WorkflowCoordinator {
             }
         };
 
-        // 6. Check for uncommitted changes and commit/push
-        match sandbox.has_uncommitted_changes().await {
-            Ok(true) => {
-                info!(
-                    "Uncommitted changes detected in sandbox. Committing and pushing to {}",
-                    params.pr_branch
-                );
-                if let Err(e) = sandbox
-                    .commit_and_push("openreview: apply changes", &params.pr_branch)
-                    .await
-                {
-                    error!("Failed to commit and push changes: {e}");
-                    if let Some(gh) = &gh_client {
-                        let _ = gh
-                            .post_comment(
-                                owner,
-                                repo,
-                                params.pr_number,
-                                &format!(
-                                    "⚠️ Failed to push changes to branch `{}`: {}",
-                                    params.pr_branch, e
-                                ),
-                            )
-                            .await;
-                    }
+        // 9. Safe Git Publishing Gate
+        if params.mode == WorkflowMode::Fix {
+            match WorkflowPublisher::evaluate_and_publish(
+                sandbox.as_ref(),
+                gh_client.as_ref(),
+                &params,
+            )
+            .await
+            {
+                Ok(audit) => {
+                    info!(
+                        "Publish evaluation completed: action={}, success={}",
+                        audit.action_taken, audit.success
+                    );
+                }
+                Err(e) => {
+                    error!("Publish evaluation encountered an error: {e}");
                 }
             }
-            Ok(false) => {
-                debug!("No file modifications made by agent in sandbox");
-            }
-            Err(e) => {
-                warn!("Could not evaluate git diff in sandbox: {e}");
-            }
+        } else {
+            debug!("Review mode: skipping all git publishing evaluation");
         }
 
         Ok(agent_result)
@@ -172,7 +268,7 @@ impl WorkflowCoordinator {
     pub async fn handle_reaction_event(
         &self,
         repo_full_name: &str,
-        pr_number: u64,
+        installation_id: Option<u64>,
         comment_id: u64,
         reaction: &str,
         user_login: &str,
@@ -182,24 +278,84 @@ impl WorkflowCoordinator {
             None => return Err(AppError::Config(format!("Invalid repo: {repo_full_name}"))),
         };
 
-        let token = if let Some(installation_id) = self.config.github_app_installation_id {
-            get_installation_token(
-                &self.http_client,
-                &self.config.github_app_id,
-                &self.config.github_app_private_key,
-                installation_id,
-            )
-            .await?
+        let token = if let Some(inst_id) = installation_id {
+            self.token_manager
+                .get_token(
+                    &self.http_client,
+                    &self.config.github_app_id,
+                    &self.config.github_app_private_key,
+                    inst_id,
+                )
+                .await?
+        } else if let Some(fallback_id) = self.config.github_app_installation_id {
+            self.token_manager
+                .get_token(
+                    &self.http_client,
+                    &self.config.github_app_id,
+                    &self.config.github_app_private_key,
+                    fallback_id,
+                )
+                .await?
         } else {
             std::env::var("GITHUB_TOKEN").unwrap_or_default()
         };
 
         let gh_client = GitHubClient::new(token)?;
 
+        // 1. Fetch Comment and Resolve Actual PR Number (Fixing PR #0 bug)
+        let comment_detail = gh_client.get_issue_comment(owner, repo, comment_id).await?;
+        let pr_number = match extract_number_from_url(&comment_detail.issue_url) {
+            Some(n) => n,
+            None => {
+                warn!(
+                    "Could not extract PR/Issue number from issue_url: {}",
+                    comment_detail.issue_url
+                );
+                return Err(AppError::Workflow(format!(
+                    "Invalid issue_url in comment {comment_id}: {}",
+                    comment_detail.issue_url
+                )));
+            }
+        };
+
+        // 2. Verify Comment Was Authored by OpenReview Bot
+        let bot_username_lower = self.config.bot_username.to_lowercase();
+        if !comment_detail
+            .user
+            .login
+            .to_lowercase()
+            .contains(&bot_username_lower)
+        {
+            info!(
+                "Ignoring reaction on comment {} not authored by OpenReview (author: {})",
+                comment_id, comment_detail.user.login
+            );
+            return Ok(());
+        }
+
+        // 3. Verify Reactor Permission
+        let permission = gh_client
+            .get_collaborator_permission(owner, repo, user_login)
+            .await
+            .unwrap_or_else(|_| "none".to_string());
+
+        if !is_permission_authorized_for_fix(&permission) {
+            warn!(
+                "User '{}' with permission '{}' tried to trigger fix via reaction; rejected",
+                user_login, permission
+            );
+            return Err(AppError::Unauthorized(format!(
+                "Reactor '{}' lacks write access to approve fixes",
+                user_login
+            )));
+        }
+
+        // 4. Handle Reaction Type
         match reaction {
             "+1" | "heart" => {
                 info!(
-                    "Reaction {reaction} from {user_login} on comment {comment_id}. Re-triggering apply workflow."
+                    "Authorized reaction {} from {} on comment {}. Triggering Fix workflow for PR #{}.",
+                    reaction, user_login, comment_id, pr_number
                 );
                 let pr = gh_client.get_pull_request(owner, repo, pr_number).await?;
                 let params = WorkflowParams {
@@ -208,10 +364,16 @@ impl WorkflowCoordinator {
                     base_branch: pr.base.r#ref,
                     pr_branch: pr.head.r#ref,
                     comment_id: Some(comment_id),
+                    installation_id,
+                    mode: WorkflowMode::Fix,
+                    actor: user_login.to_string(),
+                    dry_run: false,
+                    head_sha: Some(pr.head.sha),
                     messages: vec![crate::workflow::params::ThreadMessage {
                         role: "user".to_string(),
                         content: format!(
-                            "User {user_login} approved changes on comment {comment_id} with reaction {reaction}. Please apply the suggested edits directly to the repository."
+                            "User @{} (write collaborator) approved the code proposal from comment {} with reaction {}. Please apply the suggested edits directly to the repository and verify them.",
+                            user_login, comment_id, reaction
                         ),
                     }],
                 };
@@ -219,11 +381,15 @@ impl WorkflowCoordinator {
             }
             "-1" | "confused" => {
                 info!(
-                    "Reaction {reaction} from {user_login} on comment {comment_id}. Acknowledging skip."
+                    "Reaction {} from {} on comment {}. Acknowledging cancellation.",
+                    reaction, user_login, comment_id
                 );
-                let skip_text = "👀 Got it, skipping that. Mention me with feedback if you'd like a different approach.\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*";
+                let skip_text = format!(
+                    "👀 Got it, cancelling proposal per @{}'s feedback. Mention me with `@{} review` if you'd like another review.\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*",
+                    user_login, self.config.bot_username
+                );
                 gh_client
-                    .post_comment(owner, repo, pr_number, skip_text)
+                    .post_comment(owner, repo, pr_number, &skip_text)
                     .await?;
             }
             other => {

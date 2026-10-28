@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
                 config,
                 coordinator,
                 metrics: Arc::new(Metrics::new()),
+                jobs: Arc::new(openreview::jobs::JobManager::default()),
             };
 
             let app = create_router(state);
@@ -79,6 +80,11 @@ async fn main() -> Result<()> {
                 base_branch: "main".to_string(),
                 pr_branch,
                 comment_id: None,
+                installation_id: None,
+                mode: openreview::workflow::WorkflowMode::Review,
+                actor: "cli".to_string(),
+                dry_run,
+                head_sha: None,
                 messages: vec![openreview::workflow::ThreadMessage {
                     role: "user".to_string(),
                     content: format!("Please review pull request #{pr}"),
@@ -102,6 +108,14 @@ async fn main() -> Result<()> {
             match config.validate_github_credentials() {
                 Ok(_) => println!("  GitHub App Keys: [OK] Present and valid"),
                 Err(e) => println!("  GitHub App Keys: [WARN] {}", e),
+            }
+
+            match config.validate_llm_credentials() {
+                Ok(_) => println!(
+                    "  LLM Credentials: [OK] Present and valid for {}",
+                    config.llm_provider
+                ),
+                Err(e) => println!("  LLM Credentials: [WARN] {}", e),
             }
 
             println!("\nConfiguration check complete.");

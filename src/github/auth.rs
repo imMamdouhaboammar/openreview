@@ -66,6 +66,59 @@ pub async fn get_installation_token(
     Ok(token_resp.token)
 }
 
+use std::collections::HashMap;
+use tokio::sync::RwLock;
+
+#[derive(Default)]
+pub struct TokenManager {
+    tokens: RwLock<HashMap<u64, (String, u64)>>,
+}
+
+impl TokenManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get_token(
+        &self,
+        client: &reqwest::Client,
+        app_id: &str,
+        private_key_pem: &str,
+        installation_id: u64,
+    ) -> Result<String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .as_secs();
+
+        // Check cache with 5-minute safety margin
+        {
+            let guard = self.tokens.read().await;
+            if let Some((token, exp)) = guard.get(&installation_id)
+                && *exp > now + 300
+            {
+                return Ok(token.clone());
+            }
+        }
+
+        let fresh_token =
+            get_installation_token(client, app_id, private_key_pem, installation_id).await?;
+        let exp = now + 3600;
+
+        {
+            let mut guard = self.tokens.write().await;
+            guard.insert(installation_id, (fresh_token.clone(), exp));
+        }
+
+        Ok(fresh_token)
+    }
+
+    pub async fn invalidate(&self, installation_id: u64) {
+        let mut guard = self.tokens.write().await;
+        guard.remove(&installation_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

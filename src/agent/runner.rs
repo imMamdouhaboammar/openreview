@@ -6,10 +6,24 @@ use crate::llm::traits::LlmProvider;
 use crate::llm::types::{ChatMessage, ToolCall};
 use crate::sandbox::traits::SandboxInstance;
 use crate::skills::SkillMetadata;
+use crate::workflow::command::WorkflowMode;
+use crate::workflow::context::PullRequestContext;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 const MAX_STEPS: usize = 20;
 const MAX_TOTAL_TOKENS: usize = 200_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AgentTerminationReason {
+    #[default]
+    Completed,
+    StepLimitExceeded,
+    TokenBudgetExceeded,
+    ToolFailure(String),
+    VerificationFailure(String),
+    PublishingFailure(String),
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct AgentRunResult {
@@ -18,6 +32,7 @@ pub struct AgentRunResult {
     pub total_input_tokens: usize,
     pub total_output_tokens: usize,
     pub replies_posted: usize,
+    pub termination_reason: AgentTerminationReason,
     pub error_message: Option<String>,
 }
 
@@ -27,17 +42,24 @@ pub struct AgentRunner<'a> {
     llm: &'a dyn LlmProvider,
     repo_full_name: &'a str,
     pr_number: u64,
+    mode: WorkflowMode,
+    dry_run: bool,
     skills: &'a [SkillMetadata],
+    pr_context: Option<&'a PullRequestContext>,
 }
 
 impl<'a> AgentRunner<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sandbox: &'a dyn SandboxInstance,
         github: Option<&'a GitHubClient>,
         llm: &'a dyn LlmProvider,
         repo_full_name: &'a str,
         pr_number: u64,
+        mode: WorkflowMode,
+        dry_run: bool,
         skills: &'a [SkillMetadata],
+        pr_context: Option<&'a PullRequestContext>,
     ) -> Self {
         Self {
             sandbox,
@@ -45,21 +67,36 @@ impl<'a> AgentRunner<'a> {
             llm,
             repo_full_name,
             pr_number,
+            mode,
+            dry_run,
             skills,
+            pr_context,
         }
     }
 
     pub async fn run(&self, initial_messages: Vec<ChatMessage>) -> Result<AgentRunResult> {
-        let system_prompt =
-            assemble_system_prompt(self.repo_full_name, self.pr_number, self.skills);
-        let tools = get_standard_tools();
+        let system_prompt = assemble_system_prompt(
+            self.repo_full_name,
+            self.pr_number,
+            self.mode,
+            self.skills,
+            self.pr_context,
+        );
+        let tools = get_standard_tools(self.mode);
 
         let mut messages = initial_messages;
         if messages.is_empty() {
-            messages.push(ChatMessage::user(format!(
-                "Review the changes in pull request #{} on repository {}.",
-                self.pr_number, self.repo_full_name
-            )));
+            let default_prompt = match self.mode {
+                WorkflowMode::Review => format!(
+                    "Review the changes in pull request #{} on repository {}.",
+                    self.pr_number, self.repo_full_name
+                ),
+                WorkflowMode::Fix => format!(
+                    "Analyze and fix issues reported for pull request #{} on repository {}.",
+                    self.pr_number, self.repo_full_name
+                ),
+            };
+            messages.push(ChatMessage::user(default_prompt));
         }
 
         let mut total_in = 0;
@@ -76,14 +113,24 @@ impl<'a> AgentRunner<'a> {
         };
 
         info!(
-            "Starting autonomous agent loop for PR #{}, repo {}",
-            self.pr_number, self.repo_full_name
+            "Starting autonomous agent loop for PR #{}, repo {}, mode: {:?}, dry_run: {}",
+            self.pr_number, self.repo_full_name, self.mode, self.dry_run
         );
 
         for step in 1..=MAX_STEPS {
             if total_in + total_out >= MAX_TOTAL_TOKENS {
                 warn!("Token budget exceeded: {}", total_in + total_out);
-                break;
+                return Ok(AgentRunResult {
+                    success: false,
+                    steps_taken: step,
+                    total_input_tokens: total_in,
+                    total_output_tokens: total_out,
+                    replies_posted: replies_count,
+                    termination_reason: AgentTerminationReason::TokenBudgetExceeded,
+                    error_message: Some(format!(
+                        "Token budget limit of {MAX_TOTAL_TOKENS} exceeded"
+                    )),
+                });
             }
 
             debug!("Executing ReAct agent step {step}/{MAX_STEPS}");
@@ -111,7 +158,6 @@ impl<'a> AgentRunner<'a> {
                 if let Some(content) = response.content
                     && !content.trim().is_empty()
                     && replies_count == 0
-                    && let Some(gh) = self.github
                 {
                     let formatted_reply = if content.contains("Powered by [OpenReview]") {
                         content
@@ -120,13 +166,19 @@ impl<'a> AgentRunner<'a> {
                             "{content}\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*"
                         )
                     };
-                    if let Err(e) = gh
-                        .post_comment(owner, repo, self.pr_number, &formatted_reply)
-                        .await
-                    {
-                        warn!("Failed to post fallback PR comment: {e}");
-                    } else {
+
+                    if self.dry_run {
+                        info!("Dry-run fallback comment simulated:\n{formatted_reply}");
                         replies_count += 1;
+                    } else if let Some(gh) = self.github {
+                        if let Err(e) = gh
+                            .post_comment(owner, repo, self.pr_number, &formatted_reply)
+                            .await
+                        {
+                            warn!("Failed to post fallback PR comment: {e}");
+                        } else {
+                            replies_count += 1;
+                        }
                     }
                 }
                 info!("Agent finished conversation in {step} steps with {replies_count} replies");
@@ -136,18 +188,24 @@ impl<'a> AgentRunner<'a> {
                     total_input_tokens: total_in,
                     total_output_tokens: total_out,
                     replies_posted: replies_count,
+                    termination_reason: AgentTerminationReason::Completed,
                     error_message: None,
                 });
             }
         }
 
+        // Exceeded MAX_STEPS without concluding
+        warn!("Agent loop reached maximum step limit ({MAX_STEPS}) without concluding");
         Ok(AgentRunResult {
-            success: true,
+            success: false,
             steps_taken: MAX_STEPS,
             total_input_tokens: total_in,
             total_output_tokens: total_out,
             replies_posted: replies_count,
-            error_message: None,
+            termination_reason: AgentTerminationReason::StepLimitExceeded,
+            error_message: Some(format!(
+                "Agent reached maximum execution limit of {MAX_STEPS} steps"
+            )),
         })
     }
 
@@ -163,11 +221,10 @@ impl<'a> AgentRunner<'a> {
                 let cmd = call.arguments["command"].as_str().unwrap_or_default();
                 match self.sandbox.run_bash(cmd).await {
                     Ok(out) => {
-                        let combined = format!(
+                        format!(
                             "Exit code: {}\nSTDOUT:\n{}\nSTDERR:\n{}",
                             out.exit_code, out.stdout, out.stderr
-                        );
-                        combined
+                        )
                     }
                     Err(e) => format!("Error executing bash: {e}"),
                 }
@@ -180,6 +237,11 @@ impl<'a> AgentRunner<'a> {
                 }
             }
             "writeFile" => {
+                // Application-level enforcement: Strictly forbid writeFile in Review mode
+                if self.mode == WorkflowMode::Review {
+                    return "Security Error: Tool 'writeFile' is strictly forbidden in Review mode. The repository is read-only. Fix mode with authorized permissions is required to edit files.".to_string();
+                }
+
                 let path = call.arguments["path"].as_str().unwrap_or_default();
                 let content = call.arguments["content"].as_str().unwrap_or_default();
                 match self.sandbox.write_file(path, content).await {
@@ -212,7 +274,12 @@ impl<'a> AgentRunner<'a> {
                     formatted.push_str("\n\n---\n*Powered by [OpenReview](https://github.com/imMamdouhaboammar/openreview-rs)*");
                 }
 
-                if let Some(gh) = self.github {
+                if self.dry_run {
+                    *replies_count += 1;
+                    info!("Dry-run reply captured locally:\n{formatted}");
+                    "Dry run mode active: comment recorded locally without posting to GitHub."
+                        .to_string()
+                } else if let Some(gh) = self.github {
                     match gh
                         .post_comment(owner, repo, self.pr_number, &formatted)
                         .await
@@ -225,7 +292,7 @@ impl<'a> AgentRunner<'a> {
                     }
                 } else {
                     *replies_count += 1;
-                    format!("Dry run / standalone: comment simulated:\n{formatted}")
+                    format!("Standalone simulated comment:\n{formatted}")
                 }
             }
             other => format!("Unknown tool: {other}"),
