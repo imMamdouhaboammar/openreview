@@ -17,6 +17,8 @@ pub struct Config {
     pub model_name: String,
     pub anthropic_api_key: Option<String>,
     pub openai_api_key: Option<String>,
+    pub openrouter_api_key: Option<String>,
+    pub opencode_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub gemini_api_key: Option<String>,
     pub ollama_base_url: Option<String>,
@@ -70,11 +72,16 @@ impl Config {
             "openai" => "gpt-4o".to_string(),
             "gemini" => "gemini-2.5-flash".to_string(),
             "ollama" => "deepseek-r1:latest".to_string(),
+            // Aggregators have no single safe default model; require an exact
+            // identifier from the customer's own account / subscription.
+            "openrouter" | "opencode" | "opencode_go" => String::new(),
             _ => "claude-3-7-sonnet-20250219".to_string(),
         });
 
         let anthropic_api_key = env::var("ANTHROPIC_API_KEY").ok();
         let openai_api_key = env::var("OPENAI_API_KEY").ok();
+        let openrouter_api_key = env::var("OPENROUTER_API_KEY").ok();
+        let opencode_api_key = env::var("OPENCODE_API_KEY").ok();
         let openai_base_url = env::var("OPENAI_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty());
@@ -114,6 +121,8 @@ impl Config {
             model_name,
             anthropic_api_key,
             openai_api_key,
+            openrouter_api_key,
+            opencode_api_key,
             openai_base_url,
             gemini_api_key,
             ollama_base_url,
@@ -144,6 +153,12 @@ impl Config {
     }
 
     pub fn validate_llm_credentials(&self) -> Result<()> {
+        if self.model_name.trim().is_empty() {
+            return Err(AppError::Config(format!(
+                "LLM_MODEL must be set to an accessible model ID for provider '{}'",
+                self.llm_provider
+            )));
+        }
         match self.llm_provider.as_str() {
             "anthropic" => {
                 if self.anthropic_api_key.as_deref().unwrap_or("").is_empty() {
@@ -159,6 +174,32 @@ impl Config {
                     ));
                 }
             }
+            "openrouter" => {
+                if self
+                    .openrouter_api_key
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
+                    return Err(AppError::Config(
+                        "OPENROUTER_API_KEY is required for OpenRouter provider".to_string(),
+                    ));
+                }
+            }
+            "opencode" | "opencode_go" => {
+                if self
+                    .opencode_api_key
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
+                    return Err(AppError::Config(
+                        "OPENCODE_API_KEY is required for OpenCode Console provider".to_string(),
+                    ));
+                }
+            }
             "gemini" => {
                 if self.gemini_api_key.as_deref().unwrap_or("").is_empty() {
                     return Err(AppError::Config(
@@ -171,7 +212,7 @@ impl Config {
             }
             other => {
                 return Err(AppError::Config(format!(
-                    "Unsupported LLM provider '{other}'. Supported: anthropic, openai, gemini, ollama"
+                    "Unsupported LLM provider '{other}'. Supported: anthropic, openai, openrouter, opencode, opencode_go, gemini, ollama"
                 )));
             }
         }

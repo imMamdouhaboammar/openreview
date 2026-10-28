@@ -11,10 +11,12 @@ pub struct OpenAiProvider {
     _api_key: String,
     model: String,
     base_url: String,
+    session_id: Option<HeaderValue>,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Result<Self> {
+        let url = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if !api_key.is_empty() {
@@ -24,20 +26,41 @@ impl OpenAiProvider {
                     .map_err(|e| AppError::Config(e.to_string()))?,
             );
         }
+        // OpenCode Console (especially Go plans) requires a stable session
+        // identifier across turns for routing and prompt-cache continuity.
+        // It must never contain an API key or other user-controlled material.
+        let session_id = if let Ok(parsed) = reqwest::Url::parse(&url)
+            && parsed.host_str() == Some("opencode.ai")
+            && parsed.path().starts_with("/inference/")
+        {
+            Some(
+                HeaderValue::from_str(&format!("ses_{}", uuid::Uuid::new_v4().simple()))
+                    .map_err(|e| AppError::Config(e.to_string()))?,
+            )
+        } else {
+            None
+        };
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let url = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
-
         Ok(Self {
             client,
             _api_key: api_key,
             model,
             base_url: url.trim_end_matches('/').to_string(),
+            session_id,
         })
+    }
+
+    fn request(&self, url: &str, body: &Value) -> reqwest::RequestBuilder {
+        let mut request = self.client.post(url).json(body);
+        if let Some(session) = &self.session_id {
+            request = request.header("x-opencode-session", session.clone());
+        }
+        request
     }
 }
 
@@ -136,9 +159,7 @@ impl LlmProvider for OpenAiProvider {
         );
 
         let resp = self
-            .client
-            .post(&url)
-            .json(&body)
+            .request(&url, &body)
             .send()
             .await
             .map_err(|e| AppError::Llm(format!("OpenAI network error: {e}")))?;
@@ -196,5 +217,48 @@ impl LlmProvider for OpenAiProvider {
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_go_attaches_a_stable_session_id_without_leaking_it_into_urls() {
+        let base = "https://opencode.ai/inference/go/openai";
+        let provider = OpenAiProvider::new(
+            "private-opencode-test-key".into(),
+            "glm-5.3".into(),
+            Some(base.into()),
+        )
+        .unwrap();
+        let endpoint = format!("{}/v1/chat/completions", provider.base_url);
+        let first = provider.request(&endpoint, &json!({})).build().unwrap();
+        let second = provider.request(&endpoint, &json!({})).build().unwrap();
+        assert_eq!(
+            first.url().as_str(),
+            "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        );
+        let session = first
+            .headers()
+            .get("x-opencode-session")
+            .expect("Go requires a stable session header");
+        assert!(session.to_str().unwrap().starts_with("ses_"));
+        assert_eq!(second.headers().get("x-opencode-session"), Some(session));
+        assert!(!first.url().as_str().contains("private-opencode-test-key"));
+    }
+
+    #[test]
+    fn plain_openai_does_not_receive_opencode_specific_session_headers() {
+        let provider = OpenAiProvider::new("openai-key".into(), "gpt-test".into(), None).unwrap();
+        let request = provider
+            .request(
+                &format!("{}/v1/chat/completions", provider.base_url),
+                &json!({}),
+            )
+            .build()
+            .unwrap();
+        assert!(request.headers().get("x-opencode-session").is_none());
     }
 }

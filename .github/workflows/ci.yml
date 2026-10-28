@@ -61,3 +61,20 @@ jobs:
         run: docker compose config --quiet
       - name: Validate rootless smoke-test script syntax
         run: bash -n scripts/verify-rootless-sandbox.sh
+
+  hosted-rootless-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create dedicated rootless Docker daemon
+        uses: docker/setup-docker-action@v5
+        with:
+          rootless: true
+          set-host: true
+      - name: Build and exercise real sandbox isolation
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
+          workspace="${RUNNER_TEMP:?}/openreview-workspaces"
+          mkdir -p "$workspace"
+          SANDBOX_WORKSPACE_DIR="$workspace" ./scripts/verify-rootless-sandbox.sh

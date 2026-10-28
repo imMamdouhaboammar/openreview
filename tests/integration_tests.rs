@@ -38,6 +38,8 @@ fn create_test_config() -> Config {
         model_name: "claude-3-7-sonnet-20250219".to_string(),
         anthropic_api_key: Some("dummy-key".to_string()),
         openai_api_key: None,
+        openrouter_api_key: None,
+        opencode_api_key: None,
         openai_base_url: None,
         gemini_api_key: None,
         ollama_base_url: None,
@@ -48,6 +50,62 @@ fn create_test_config() -> Config {
         host: "127.0.0.1".to_string(),
         port: 3000,
     }
+}
+
+#[test]
+fn actions_runner_rejects_missing_github_token_before_running_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let event_path = temp.path().join("event.json");
+    std::fs::write(
+        &event_path,
+        serde_json::to_vec(&json!({
+            "action": "created", "repository": {"full_name": "example/project"},
+            "issue": {"number": 17, "pull_request": {}},
+            "comment": {"id": 1, "body": "@openreview fix bug", "user": {"login": "maintainer", "type": "User"}},
+            "sender": {"login": "maintainer", "type": "User"}
+        })).unwrap(),
+    ).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .args(["action", "--dry-run"])
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_EVENT_NAME", "issue_comment")
+        .env("GITHUB_REPOSITORY", "example/project")
+        .env("GITHUB_EVENT_PATH", event_path)
+        .env_remove("GITHUB_TOKEN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GITHUB_TOKEN"), "{stderr}");
+}
+
+#[test]
+fn actions_runner_rejects_unsafe_local_sandbox_even_in_dry_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let event_path = temp.path().join("event.json");
+    std::fs::write(
+        &event_path,
+        serde_json::to_vec(&json!({
+            "action": "opened", "repository": {"full_name": "example/project"},
+            "sender": {"login": "author", "type": "User"},
+            "pull_request": {"number": 17, "head": {"ref": "feature", "sha": "abc123"}, "base": {"ref": "main"}}
+        })).unwrap(),
+    ).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .arg("action")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_EVENT_NAME", "pull_request")
+        .env("GITHUB_REPOSITORY", "example/project")
+        .env("GITHUB_EVENT_PATH", event_path)
+        .env("GITHUB_TOKEN", "dummy-token-not-real")
+        .env("ANTHROPIC_API_KEY", "dummy-llm-key-not-real")
+        .env("LLM_PROVIDER", "anthropic")
+        .env("SANDBOX_DRIVER", "local")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SANDBOX_DRIVER=docker"), "{stderr}");
 }
 
 fn sign_payload(secret: &str, body: &[u8]) -> String {

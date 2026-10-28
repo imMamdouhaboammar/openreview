@@ -1,0 +1,84 @@
+name: OpenReview Autonomous Code Review and Fix
+description: Run the Rust OpenReview agent with your own AI API key on a GitHub-hosted runner.
+branding:
+  icon: git-pull-request
+  color: blue
+inputs:
+  provider:
+    description: anthropic, openai, openrouter, opencode, opencode_go, gemini, or ollama
+    required: true
+  model:
+    description: Exact model identifier provided by the selected AI service
+    required: true
+  bot_username:
+    description: The handle to mention in pull request comments
+    required: false
+    default: openreview
+  dry_run:
+    description: Suppress remote comments and pushes
+    required: false
+    default: 'false'
+  anthropic_api_key:
+    description: Anthropic key supplied from Actions Secrets
+    required: false
+  openai_api_key:
+    description: OpenAI key supplied from Actions Secrets
+    required: false
+  openrouter_api_key:
+    description: OpenRouter key supplied from Actions Secrets
+    required: false
+  opencode_api_key:
+    description: OpenCode Console or Go key supplied from Actions Secrets
+    required: false
+  gemini_api_key:
+    description: Gemini key supplied from Actions Secrets
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Provision isolated rootless Docker daemon
+      uses: docker/setup-docker-action@v5
+      with:
+        rootless: true
+        set-host: true
+    - name: Initialize and security-test untrusted execution sandbox
+      shell: bash
+      env:
+        OPENREVIEW_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        workspace="${RUNNER_TEMP:?}/openreview-workspaces"
+        mkdir -p "$workspace"
+        chmod 700 "$workspace"
+        docker build -f "$OPENREVIEW_ACTION_PATH/Dockerfile.sandbox" -t openreview-sandbox:latest "$OPENREVIEW_ACTION_PATH"
+        SANDBOX_WORKSPACE_DIR="$workspace" "$OPENREVIEW_ACTION_PATH/scripts/verify-rootless-sandbox.sh"
+        echo "SANDBOX_WORKSPACE_DIR=$workspace" >> "$GITHUB_ENV"
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Build OpenReview agent
+      shell: bash
+      env:
+        OPENREVIEW_ACTION_PATH: ${{ github.action_path }}
+      run: cargo build --locked --release --manifest-path "$OPENREVIEW_ACTION_PATH/Cargo.toml"
+    - name: Execute authenticated GitHub PR event
+      shell: bash
+      env:
+        OPENREVIEW_ACTION_PATH: ${{ github.action_path }}
+        OPENREVIEW_DRY_RUN: ${{ inputs.dry_run }}
+        GITHUB_TOKEN: ${{ github.token }}
+        LLM_PROVIDER: ${{ inputs.provider }}
+        LLM_MODEL: ${{ inputs.model }}
+        BOT_USERNAME: ${{ inputs.bot_username }}
+        SANDBOX_DRIVER: docker
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+      run: |
+        set -euo pipefail
+        if [[ "$OPENREVIEW_DRY_RUN" == "true" ]]; then
+          "$OPENREVIEW_ACTION_PATH/target/release/openreview" action --dry-run
+        else
+          "$OPENREVIEW_ACTION_PATH/target/release/openreview" action
+        fi

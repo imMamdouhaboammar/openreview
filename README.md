@@ -124,10 +124,13 @@ GITHUB_APP_ID=123456
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=your_hmac_webhook_secret
 
-# LLM Engine ("anthropic" | "openai" | "gemini" | "ollama")
+# LLM Engine ("anthropic" | "openai" | "openrouter" | "opencode" | "opencode_go" | "gemini" | "ollama")
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-3-7-sonnet-20250219
 ANTHROPIC_API_KEY=sk-ant-...
+# For OpenRouter set LLM_PROVIDER=openrouter, LLM_MODEL=provider/model, OPENROUTER_API_KEY=...
+# For OpenCode Console set LLM_PROVIDER=opencode, LLM_MODEL=<model>, OPENCODE_API_KEY=...
+# For OpenCode Go set LLM_PROVIDER=opencode_go, LLM_MODEL=<Go-plan-model>, OPENCODE_API_KEY=...
 
 # Secure webhook execution requires an isolated rootless Docker engine
 SANDBOX_DRIVER=docker
@@ -197,7 +200,37 @@ MAX_CONCURRENT_JOBS=10
 
 6. Install the App on the desired repositories/accounts. For one owning account, **Private** visibility is sufficient; for *multiple unrelated organizations*, change visibility to **Public** in GitHub before installation. Locate each approved numeric installation ID from GitHub's installation settings or the signed installation webhook; add only those IDs, for example `ALLOWED_INSTALLATION_IDS=123456,789012`, to `.env`. Restart with `docker compose up -d` and verify an authorized `@YOUR_APP_HANDLE review` command in a test PR, replacing the handle with the `BOT_USERNAME` value. Unapproved installations receive no jobs, even if their webhook is validly signed. Before any authorized `@YOUR_APP_HANDLE fix`, separately confirm the bot has installation-scoped write permission and the rootless sandbox security smoke test passes on the real daemon.
 
-### Option 2: Standalone Binary
+### Option 2: GitHub-hosted Actions (no VPS; bring your own AI key)
+
+This alternative runs the **same Rust Review and authorized Fix engine** on a GitHub-hosted Actions runner inside each user's own repository. It does not require a hosted webhook, GitHub App registration, or a central service private key. It is a **repository-installed workflow**, not a centrally installed GitHub App: each repository owner must opt in and add an AI provider key in their own repository's Actions Secrets. GitHub Actions usage and AI inference are charged/limited according to the respective user's plans; no perpetual free hosting is implied.
+
+1. In the target repository, go to **Settings → Secrets and variables → Actions → New repository secret**. Add one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OPENCODE_API_KEY` for the desired provider. These secrets are not passed into untrusted code containers.
+2. Copy [`examples/github-actions.yml`](examples/github-actions.yml) into **`.github/workflows/openreview.yml`** in that repository. Replace the example `@vX.Y.Z` with an *actual released and reviewed OpenReview version* when available; a placeholder is not runnable. Select `provider`, `model` and the matching `secrets.*` input. You may remove the `pull_request` trigger if you only want on-demand reviews through comments.
+3. Check repository/org settings permit GitHub Actions to use the specified third-party action and that the workflow has the listed **Contents write, Issues write, Pull requests write** permissions. This authority is needed for Fix and posting reviews. The agent independently rechecks that the **comment author** has `write`, `maintain` or `admin` access to initiate Fix; a simple `@openreview` mention only starts Review. Ensure `bot_username` matches the mention people will type (the workflow is *not* a separately registered `@openreview` GitHub user).
+4. On a PR, leave `@openreview review`, `@openreview suggest` or `@openreview fix <instructions>`. The `pull_request` trigger also starts read-only Review on same-repository PR updates. Look in the Actions run logs for success/failure; the agent may post PR findings, and authorized Fix may commit to the **PR's own source branch**, after required verification. Fix for fork PRs is denied. The sandbox smoke test refuses to run if rootless Docker's filesystem, network or resource boundary cannot be verified.
+
+**Provider selection:**
+
+| `provider` / `LLM_PROVIDER` | Required Actions secret / env variable | `model` / `LLM_MODEL` |
+| --- | --- | --- |
+| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic model ID |
+| `openai` | `OPENAI_API_KEY` | OpenAI model ID |
+| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter ID such as `openai/gpt-4o-mini` |
+| `opencode` | `OPENCODE_API_KEY` | Accessible **OpenCode Console** Paygo model |
+| `opencode_go` | `OPENCODE_API_KEY` | Accessible **OpenCode Go** plan model |
+| `gemini` | `GEMINI_API_KEY` | Gemini model ID |
+
+OpenCode Console is an **inference provider** here, not a separate invocation of the OpenCode CLI agent. OpenCode's free-tier models may only be accessible from the official OpenCode CLI, not a third-party client; use an eligible paid/Go model and account. The Go adapter sends a stable `x-opencode-session` value for each agent run. OpenRouter and OpenCode models **must** be configured explicitly: there is no arbitrary default model. Provider APIs, quotas, and model availability can change; try a test PR first.
+
+**Important security and operational limitations:**
+
+- GitHub-hosted rootless Docker must actually enforce cgroup v2 resource limits. The action and CI run the isolation smoke test and **fail closed** if the runner does not support it. Passing a Docker build alone is insufficient. Until a real hosted runner run passes, this installation mode is **experimental**.
+- A workflow triggered by a forked `pull_request` does not receive repository Actions secrets. The example skips automatic review of fork PRs; a trusted maintainer's `issue_comment` event on a fork PR may run Review, but it **cannot** Fix the fork branch. Never add `pull_request_target` with untrusted PR code checked out into the trusted job.
+- `GITHUB_TOKEN` changes normally **do not trigger new Actions `push`/`pull_request` workflow runs**. The agent performs its own verification before publishing; if a team requires fresh CI checks on every Fix commit, add a separately reviewed installation-token strategy or require manual re-run before merging. Branch protection and repository policy still apply; no force pushes are made.
+- Each job is transient. Unlike the self-hosted service, this mode does not offer a persistent webhook queue, delivery deduplication database, centralized installation management, or an always-on API. The workflow's concurrency group prevents simultaneous runs on the same PR while queued; it is **not** a durable exactly-once guarantee.
+- The action builds the Rust binary from its checked-out release source. This consumes runner minutes; it is not a prebuilt, published Marketplace binary. Pin a verified immutable commit SHA for stronger supply-chain assurance once an audited release exists.
+
+### Option 3: Standalone Binary
 
 1. Build release binary:
    ```bash
