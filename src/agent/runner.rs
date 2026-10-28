@@ -152,6 +152,18 @@ impl<'a> AgentRunner<'a> {
             debug!("Executing ReAct agent step {step}/{MAX_STEPS}");
 
             let response = self.llm.complete(&system_prompt, &messages, &tools).await?;
+            // A provider refusal, truncated completion, or malformed empty result
+            // is not a successful Review or Fix, even when HTTP returned 200.
+            if response.tool_calls.is_empty()
+                && response
+                    .content
+                    .as_deref()
+                    .is_none_or(|text| text.trim().is_empty())
+            {
+                return Err(AppError::Llm(
+                    "AI provider returned an empty response with no tool calls".into(),
+                ));
+            }
             total_in += response.input_tokens;
             total_out += response.output_tokens;
 

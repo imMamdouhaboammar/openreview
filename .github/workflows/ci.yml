@@ -108,3 +108,22 @@ jobs:
             sleep 1
           done
           cargo run --locked --release -- action --dry-run
+
+          # Exercise the explicit @openreview review mention path too, without
+          # posting a real GitHub comment or allowing Fix publication.
+          mention_event="${RUNNER_TEMP:?}/openreview-mention-event.json"
+          jq '{
+            action: "created",
+            repository: {full_name: .repository.full_name},
+            issue: {
+              number: .pull_request.number,
+              pull_request: {url: .pull_request.url}
+            },
+            comment: {
+              id: 1,
+              body: "@openreview review inspect this PR",
+              user: {login: .sender.login, type: "User"}
+            },
+            sender: {login: .sender.login, type: "User"}
+          }' "$GITHUB_EVENT_PATH" > "$mention_event"
+          GITHUB_EVENT_NAME=issue_comment GITHUB_EVENT_PATH="$mention_event" cargo run --locked --release -- action --dry-run

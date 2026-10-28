@@ -671,6 +671,34 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
 }
 
 #[tokio::test]
+async fn empty_model_response_must_not_complete_an_authorized_fix() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = MockLlm::new(vec![LlmResponse {
+        content: Some("   ".into()),
+        tool_calls: vec![],
+        input_tokens: 10,
+        output_tokens: 0,
+    }]);
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Fix,
+        true,
+        &[],
+        None,
+    );
+    let error = runner.run(vec![]).await.unwrap_err();
+    assert!(
+        error.to_string().contains("empty response"),
+        "empty inference output must fail instead of claiming Fix completion: {error}"
+    );
+}
+
+#[tokio::test]
 async fn test_agent_step_limit_exceeded() {
     let temp = tempfile::tempdir().unwrap();
     let sandbox = LocalSandbox::new(temp, "owner/repo".to_string(), String::new());

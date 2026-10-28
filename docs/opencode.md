@@ -102,7 +102,37 @@ your securely managed `.env` file. The Compose service forwards the
 `OPENCODE_CUSTOM_URL` and `OPENCODE_CUSTOM_PROTOCOL` values; the model's
 provider does not need a separate upstream Google/Anthropic key.
 
-## 4. Smoke-check and troubleshooting
+## 4. Validate the full PR mention workflow
+
+These checks are required for a real deployment, not covered by a model-list
+request or a successful standalone inference request:
+
+1. Use an **audited, published** Action reference (or a deployed GitHub App).
+   Configure the repository's Actions secret and the matching provider/model
+   settings. The placeholder `@vX.Y.Z` is not a working release.
+2. In a same-repository test PR, comment `@openreview review`. Confirm the
+   GitHub event starts an OpenReview workflow, authenticates to the correct PR,
+   reads the diff, performs model/tool round trips through the rootless sandbox,
+   and publishes a real review comment. A read-only Review must never modify
+   the branch or publish commits.
+3. Verify the model can call `readFile`, receive the file contents, and then
+   produce a final response. A plain one-shot prompt response does not prove
+   the tool-enabled agent works.
+4. Only from a controlled branch with a collaborator who has **write** access,
+   comment `@openreview fix <specific task>`. The authorized Fix must run in
+   a separate writable sandbox, modify the intended files, execute relevant
+   tests, publish with a normal **non-force push**, verify GitHub's final head
+   SHA, and report the actual outcome. Never trial Fix on a protected branch.
+5. Also test negative cases: unqualified mentions default to Review, an
+   unauthorized Fix author is denied, fork Fix is rejected, failed model/tool
+   calls do not publish code, and stale PR heads prevent publication.
+
+The hosted CI uses a mock model to test authenticated PR lookup, rootless
+sandbox execution and tool-call round trips. **It cannot prove live OpenCode
+model interoperability or an authorized remote Fix push.** Run those two
+integration checks with short-lived credentials before release.
+
+## 5. Smoke-check and troubleshooting
 
 First verify the connection ID, model and protocol in OpenCode Console.
 For the example native Gemini endpoint, test with a short prompt before

@@ -215,8 +215,17 @@ impl LlmProvider for OpenAiProvider {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                let args_str = tc["function"]["arguments"]
+                    .as_str()
+                    .ok_or_else(|| AppError::Llm("OpenAI tool arguments are missing".into()))?;
+                let arguments: Value = serde_json::from_str(args_str).map_err(|error| {
+                    AppError::Llm(format!("Invalid OpenAI tool arguments: {error}"))
+                })?;
+                if !arguments.is_object() {
+                    return Err(AppError::Llm(
+                        "OpenAI tool arguments must be a JSON object".into(),
+                    ));
+                }
                 tool_calls.push(ToolCall {
                     id,
                     name,

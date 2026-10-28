@@ -199,6 +199,29 @@ async fn custom_responses_round_trips_function_calls() {
 }
 
 #[tokio::test]
+async fn custom_chat_rejects_malformed_tool_arguments_instead_of_running_empty_tool() {
+    let (base, server) = mock_once(
+        |headers, _| assert!(headers.starts_with("POST /chat/completions HTTP/1.1")),
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_bad","type":"function","function":{"name":"writeFile","arguments":"not valid JSON"}}]}}],"usage":{}}"#,
+    )
+    .await;
+    let provider =
+        OpenAiProvider::new("scoped-test-key".into(), "model".into(), Some(base.clone()))
+            .unwrap()
+            .with_chat_endpoint(format!("{base}/chat/completions"))
+            .unwrap();
+    let error = provider
+        .complete("", &[ChatMessage::user("test")], &[])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("tool arguments"),
+        "malformed tool input must not be silently changed to an empty object: {error}"
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn responses_reject_malformed_function_arguments() {
     let (base, server) = mock_once(
         |headers, _| assert!(headers.starts_with("POST /responses HTTP/1.1")),
