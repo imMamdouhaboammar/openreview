@@ -1,5 +1,6 @@
 pub mod action;
 pub mod agent;
+pub mod branding;
 pub mod cli;
 pub mod config;
 pub mod error;

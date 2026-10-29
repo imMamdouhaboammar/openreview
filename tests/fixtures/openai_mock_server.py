@@ -6,8 +6,17 @@ its LLM adapter with an authenticated GitHub PR and isolated sandbox.
 """
 
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+def is_openreview_readme(content):
+    """Accept the repo's Markdown or branded HTML title, not an incidental mention."""
+    return bool(re.search(
+        r"(?m)^# OpenReview[ \t]*$|<h1\b[^>]*>\s*OpenReview\s*</h1>",
+        content,
+    ))
 
 
 class MockCompletion(BaseHTTPRequestHandler):
@@ -43,7 +52,7 @@ class MockCompletion(BaseHTTPRequestHandler):
             ]
             if (
                 not any(call.get("id") == "read_repo_readme" for call in prior_calls)
-                or "# OpenReview" not in tool_results[0].get("content", "")
+                or not is_openreview_readme(tool_results[0].get("content", ""))
             ):
                 self.send_error(422, "tool call history or sandbox output invalid")
                 return

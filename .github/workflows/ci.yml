@@ -66,6 +66,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify local completion fixture contract
+        run: python3 -m unittest discover -s tests -p 'test_mock_completion.py' -v
       - name: Delegate runner user cgroups through systemd session
         run: |
           set -euo pipefail
