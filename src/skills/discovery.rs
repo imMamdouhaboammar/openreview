@@ -28,14 +28,26 @@ async fn is_plain_path(path: &Path, directory: bool) -> bool {
 
 pub async fn discover_skills_in_dir(dir: &Path) -> Vec<SkillMetadata> {
     let mut skills = Vec::new();
-    if !is_plain_path(dir, true).await {
+    let Ok(dir_meta) = fs::symlink_metadata(dir).await else {
+        return skills;
+    };
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        return skills;
+    }
+    let Ok(canonical_dir) = fs::canonicalize(dir).await else {
+        return skills;
+    };
+    if !is_plain_path(&canonical_dir, true).await {
         return skills;
     }
 
-    let mut entries = match fs::read_dir(dir).await {
+    let mut entries = match fs::read_dir(&canonical_dir).await {
         Ok(e) => e,
         Err(err) => {
-            debug!("Could not read skills directory {}: {err}", dir.display());
+            debug!(
+                "Could not read skills directory {}: {err}",
+                canonical_dir.display()
+            );
             return skills;
         }
     };
