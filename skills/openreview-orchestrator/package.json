@@ -1,0 +1,19 @@
+{
+  "name": "@openreview/orchestrator",
+  "version": "1.0.0",
+  "description": "Master orchestrator for the OpenReview autonomous reviewing and remediation engine",
+  "main": "scripts/orchestrate.py",
+  "scripts": {
+    "test": "python3 -m unittest discover -s evals -p 'test_*.py' -v"
+  },
+  "keywords": [
+    "openreview",
+    "code-review",
+    "agent-skill",
+    "poteto-mode",
+    "deep-digger",
+    "pull-request"
+  ],
+  "author": "Mamdouh Aboammar",
+  "license": "MIT"
+}

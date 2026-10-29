@@ -1,0 +1,36 @@
+[
+  {
+    "name": "review-pr-security",
+    "prompt": "Review pull request #45 for security vulnerabilities and race conditions",
+    "should_trigger": true,
+    "expected_mode": "REVIEW",
+    "expected_tools": ["openreview review", "agency-code-reviewer"]
+  },
+  {
+    "name": "fix-pr-authorized",
+    "prompt": "@openreview fix resolve the sql injection in user search handler",
+    "should_trigger": true,
+    "expected_mode": "FIX",
+    "expected_tools": ["openreview fix", "pre-publish-verification-gate"]
+  },
+  {
+    "name": "isolate-regression-ddmin",
+    "prompt": "Why did the test fail with this large payload? Isolate the minimal reproducing case",
+    "should_trigger": true,
+    "expected_mode": "INVESTIGATE",
+    "expected_tools": ["deep-digger-min", "ddmin"]
+  },
+  {
+    "name": "audit-system-invariants",
+    "prompt": "Verify openreview config and check if our docker sandbox satisfies invariants",
+    "should_trigger": true,
+    "expected_mode": "VERIFY_CONFIG",
+    "expected_tools": ["verify_openreview.py", "openreview verify-config"]
+  },
+  {
+    "name": "negative-unrelated-joke",
+    "prompt": "Tell me a joke about computer programming",
+    "should_trigger": false,
+    "expected_mode": "NONE"
+  }
+]

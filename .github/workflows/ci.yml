@@ -43,6 +43,15 @@ jobs:
       - name: Agent skill security scan
         run: python3 scripts/scan_skill_security.py skills/deep-digger
 
+  openreview-orchestrator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Orchestrator tests
+        run: python3 -m unittest discover -s skills/openreview-orchestrator/evals -p 'test_orchestrator.py' -v
+      - name: Agent skill security scan
+        run: python3 scripts/scan_skill_security.py skills/openreview-orchestrator
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agentmarketplace.dev/schema/v1/plugin.json",
+  "id": "openreview-orchestrator",
+  "name": "OpenReview Orchestrator",
+  "version": "1.0.0",
+  "description": "Master orchestrator for OpenReview autonomous review, verified fix, and causal regression minimization engine.",
+  "category": "Developer Tools",
+  "tags": [
+    "code-review",
+    "git",
+    "github",
+    "pull-requests",
+    "ddmin",
+    "poteto"
+  ],
+  "author": {
+    "name": "Mamdouh Aboammar"
+  },
+  "compatibility": {
+    "claude-code": ">=1.0.0",
+    "codex": ">=1.0.0",
+    "antigravity": ">=1.0.0",
+    "chatgpt": ">=1.0.0"
+  }
+}

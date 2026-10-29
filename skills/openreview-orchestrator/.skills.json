@@ -1,0 +1,9 @@
+{
+  "skills": [
+    {
+      "name": "openreview-orchestrator",
+      "path": "SKILL.md",
+      "description": "Master orchestrator for OpenReview autonomous review, verified fix, and causal regression minimization engine."
+    }
+  ]
+}

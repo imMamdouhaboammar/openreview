@@ -1,0 +1,7 @@
+interface:
+  display_name: OpenReview Orchestrator
+  short_description: Master orchestrator for OpenReview review, fix, and regression minimization
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  allow_implicit_invocation: true
