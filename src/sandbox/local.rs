@@ -42,6 +42,8 @@ impl LocalSandbox {
             "GITHUB_TOKEN",
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OPENCODE_API_KEY",
             "GEMINI_API_KEY",
             "AWS_SECRET_ACCESS_KEY",
             "AWS_ACCESS_KEY_ID",
@@ -279,6 +281,8 @@ mod tests {
         unsafe {
             std::env::set_var("GITHUB_APP_PRIVATE_KEY", "SUPER_SECRET_KEY");
             std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-123");
+            std::env::set_var("OPENROUTER_API_KEY", "sk-or-test-456");
+            std::env::set_var("OPENCODE_API_KEY", "sk-oc-test-789");
         }
 
         let temp = tempfile::tempdir().unwrap();
@@ -287,5 +291,7 @@ mod tests {
         let out = sandbox.run_bash("env").await.unwrap();
         assert!(!out.stdout.contains("SUPER_SECRET_KEY"));
         assert!(!out.stdout.contains("sk-ant-test-123"));
+        assert!(!out.stdout.contains("sk-or-test-456"));
+        assert!(!out.stdout.contains("sk-oc-test-789"));
     }
 }

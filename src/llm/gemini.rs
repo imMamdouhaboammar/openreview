@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use crate::llm::traits::LlmProvider;
 use crate::llm::types::{ChatMessage, LlmResponse, MessageRole, ToolCall, ToolDefinition};
 use async_trait::async_trait;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -10,6 +10,7 @@ pub struct GeminiProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    custom_base_url: Option<String>,
 }
 
 impl GeminiProvider {
@@ -26,7 +27,27 @@ impl GeminiProvider {
             client,
             api_key,
             model,
+            custom_base_url: None,
         })
+    }
+
+    /// OpenCode's custom gateway takes a bearer key and a native Gemini path,
+    /// never a Google API key in the request URL.
+    pub fn with_opencode_custom(mut self, base_url: String) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .map_err(|error| AppError::Config(error.to_string()))?,
+        );
+        self.client = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.custom_base_url = Some(base_url);
+        Ok(self)
     }
 }
 
@@ -38,14 +59,28 @@ impl LlmProvider for GeminiProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
-        );
+        let url = if let Some(base) = &self.custom_base_url {
+            format!("{base}/models/{}:generateContent", self.model)
+        } else {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                self.model, self.api_key
+            )
+        };
 
         let mut contents: Vec<Value> = Vec::new();
+        let mut pending_function_responses: Vec<Value> = Vec::new();
 
         for msg in messages {
+            // One Gemini model turn may request several tools in parallel.
+            // Their results belong to a single user content with one part per call.
+            // Flush before any non-tool message to preserve conversation boundaries.
+            if msg.role != MessageRole::Tool && !pending_function_responses.is_empty() {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": std::mem::take(&mut pending_function_responses)
+                }));
+            }
             match msg.role {
                 MessageRole::User => {
                     contents.push(json!({
@@ -59,12 +94,18 @@ impl LlmProvider for GeminiProvider {
                         parts.push(json!({ "text": msg.content }));
                     }
                     for tc in &msg.tool_calls {
-                        parts.push(json!({
+                        let mut part = json!({
                             "functionCall": {
                                 "name": tc.name,
                                 "args": tc.arguments
                             }
-                        }));
+                        });
+                        // Gemini thinking models require the exact opaque signature
+                        // from each original functionCall part on subsequent turns.
+                        if let Some(signature) = &tc.thought_signature {
+                            part["thoughtSignature"] = json!(signature);
+                        }
+                        parts.push(part);
                     }
                     contents.push(json!({
                         "role": "model",
@@ -72,18 +113,36 @@ impl LlmProvider for GeminiProvider {
                     }));
                 }
                 MessageRole::Tool => {
-                    contents.push(json!({
-                        "role": "function",
-                        "parts": [{
-                            "functionResponse": {
-                                "name": msg.tool_call_id.clone().unwrap_or_else(|| "tool_result".to_string()),
-                                "response": { "output": msg.content }
-                            }
-                        }]
+                    let function_name = msg
+                        .tool_call_id
+                        .as_deref()
+                        .and_then(|call_id| {
+                            messages
+                                .iter()
+                                .rev()
+                                .flat_map(|previous| previous.tool_calls.iter())
+                                .find(|call| call.id == call_id)
+                        })
+                        .map(|call| call.name.as_str())
+                        .unwrap_or("tool_result");
+                    // Function responses use the original function name, not
+                    // an internal tool-call ID. Keep parallel results as parts
+                    // of the same user content rather than separate messages.
+                    pending_function_responses.push(json!({
+                        "functionResponse": {
+                            "name": function_name,
+                            "response": { "output": msg.content }
+                        }
                     }));
                 }
                 MessageRole::System => {}
             }
+        }
+        if !pending_function_responses.is_empty() {
+            contents.push(json!({
+                "role": "user",
+                "parts": pending_function_responses
+            }));
         }
 
         let mut body = json!({
@@ -108,6 +167,14 @@ impl LlmProvider for GeminiProvider {
                 })
                 .collect();
             body["tools"] = json!([{ "functionDeclarations": decls }]);
+        } else {
+            // Omitting function declarations does not reliably terminate
+            // native Gemini tool loops when prior turns contain functionCall
+            // parts. The caller explicitly supplied no available tools (as
+            // on a bounded Review's final turn): prohibit new calls.
+            body["toolConfig"] = json!({
+                "functionCallingConfig": { "mode": "NONE" }
+            });
         }
 
         debug!("Dispatching Google Gemini completion request");
@@ -153,6 +220,7 @@ impl LlmProvider for GeminiProvider {
                         id,
                         name,
                         arguments,
+                        thought_signature: part["thoughtSignature"].as_str().map(str::to_owned),
                     });
                 }
             }

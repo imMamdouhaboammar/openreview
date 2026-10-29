@@ -8,7 +8,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use openreview::cli::{Cli, Commands};
 use openreview::config::Config;
-use openreview::error::Result;
+use openreview::error::{AppError, Result};
 use openreview::llm::create_llm_provider;
 use openreview::sandbox::{DockerSandboxDriver, LocalSandboxDriver, SandboxDriver};
 use openreview::server::{AppState, Metrics, create_router};
@@ -125,6 +125,70 @@ async fn main() -> Result<()> {
             info!(
                 "Review completed: {} steps taken, {} comments posted",
                 outcome.steps_taken, outcome.replies_posted
+            );
+        }
+        Commands::Action { dry_run } => {
+            let mut config = config;
+            if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+                return Err(AppError::Unauthorized(
+                    "The action command requires the authenticated GitHub Actions environment"
+                        .into(),
+                ));
+            }
+            let event_name = std::env::var("GITHUB_EVENT_NAME")
+                .map_err(|_| AppError::Config("GITHUB_EVENT_NAME is required".into()))?;
+            let repo = std::env::var("GITHUB_REPOSITORY")
+                .map_err(|_| AppError::Config("GITHUB_REPOSITORY is required".into()))?;
+            let path = std::env::var("GITHUB_EVENT_PATH")
+                .map_err(|_| AppError::Config("GITHUB_EVENT_PATH is required".into()))?;
+            let event_data = std::fs::read(&path).map_err(|e| {
+                AppError::Config(format!("Unable to read authenticated Actions event: {e}"))
+            })?;
+            let event: serde_json::Value = serde_json::from_slice(&event_data)
+                .map_err(|e| AppError::Config(format!("Invalid GitHub Actions event JSON: {e}")))?;
+            let Some(mut params) = openreview::action::parse_action_event(
+                &event_name,
+                &event,
+                &repo,
+                &config.bot_username,
+            )?
+            else {
+                info!("No actionable OpenReview command in this GitHub Actions event");
+                return Ok(());
+            };
+            if std::env::var("GITHUB_TOKEN")
+                .ok()
+                .is_none_or(|token| token.trim().is_empty())
+            {
+                return Err(AppError::Unauthorized(
+                    "GITHUB_TOKEN is required for repository-scoped Actions authentication".into(),
+                ));
+            }
+            // An Actions invocation must use the calling repository's own
+            // ephemeral token. Ignore unrelated App-installation defaults
+            // that may be present in an operator's runner environment.
+            config.github_app_installation_id = None;
+            config.validate_llm_credentials()?;
+            if config.sandbox_driver != "docker" {
+                return Err(AppError::Config(
+                    "GitHub Actions execution requires SANDBOX_DRIVER=docker; Local mode cannot isolate untrusted PR code".into(),
+                ));
+            }
+            validate_isolated_docker_backend(&config)?;
+
+            params.dry_run = dry_run;
+            let llm = Arc::from(create_llm_provider(&config)?);
+            let sandbox: Arc<dyn SandboxDriver> = Arc::new(DockerSandboxDriver::default());
+            let coordinator = WorkflowCoordinator::new(config, llm, sandbox);
+            let outcome = coordinator.execute_bot_workflow(params).await?;
+            if !outcome.success {
+                return Err(AppError::Workflow(
+                    "GitHub Actions agent did not complete successfully".into(),
+                ));
+            }
+            info!(
+                "GitHub Actions agent completed {} steps",
+                outcome.steps_taken
             );
         }
         Commands::VerifyConfig => {

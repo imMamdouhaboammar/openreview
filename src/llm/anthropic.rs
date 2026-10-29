@@ -11,6 +11,7 @@ pub struct AnthropicProvider {
     _api_key: String,
     model: String,
     base_url: String,
+    messages_endpoint: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -33,12 +34,32 @@ impl AnthropicProvider {
             _api_key: api_key,
             model,
             base_url: "https://api.anthropic.com".to_string(),
+            messages_endpoint: None,
         })
     }
 
     pub fn with_base_url(mut self, url: String) -> Self {
         self.base_url = url;
         self
+    }
+
+    pub fn with_opencode_custom(mut self, base_url: String) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        // OpenCode's gateway explicitly accepts x-api-key for provider SDKs.
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&self._api_key)
+                .map_err(|error| AppError::Config(error.to_string()))?,
+        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        self.client = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.messages_endpoint = Some(format!("{base_url}/messages"));
+        Ok(self)
     }
 }
 
@@ -50,7 +71,10 @@ impl LlmProvider for AnthropicProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = self
+            .messages_endpoint
+            .clone()
+            .unwrap_or_else(|| format!("{}/v1/messages", self.base_url));
 
         let anthropic_tools: Vec<Value> = tools
             .iter()
@@ -166,6 +190,7 @@ impl LlmProvider for AnthropicProvider {
                             id,
                             name,
                             arguments,
+                            thought_signature: None,
                         });
                     }
                     _ => {}

@@ -40,6 +40,13 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Run the full agent for an authenticated GitHub Actions event, without a webhook server
+    Action {
+        /// Perform analysis and local changes without any GitHub comments or pushes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Verify local configuration and credential validity
     VerifyConfig,
 

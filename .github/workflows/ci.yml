@@ -61,3 +61,69 @@ jobs:
         run: docker compose config --quiet
       - name: Validate rootless smoke-test script syntax
         run: bash -n scripts/verify-rootless-sandbox.sh
+
+  hosted-rootless-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Delegate runner user cgroups through systemd session
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${uid}.service"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user status >/dev/null
+      - name: Create dedicated rootless Docker daemon
+        uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5
+        with:
+          rootless: true
+          set-host: true
+      - name: Build and exercise real sandbox isolation
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
+          workspace="${RUNNER_TEMP:?}/openreview-workspaces"
+          mkdir -p "$workspace"
+          SANDBOX_WORKSPACE_DIR="$workspace" ./scripts/verify-rootless-sandbox.sh
+      - name: Full read-only agent dry-run against authenticated PR and fake AI endpoint
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_PROVIDER: openai
+          LLM_MODEL: openreview-e2e-mock
+          OPENAI_API_KEY: fake-ci-key-never-used-outside-localhost
+          OPENAI_BASE_URL: http://127.0.0.1:38575
+          SANDBOX_DRIVER: docker
+          BOT_USERNAME: openreview
+        run: |
+          set -euo pipefail
+          export SANDBOX_WORKSPACE_DIR="${RUNNER_TEMP:?}/openreview-workspaces"
+          python3 tests/fixtures/openai_mock_server.py 38575 &
+          mock_pid=$!
+          trap 'kill "$mock_pid" 2>/dev/null || true' EXIT
+          for i in {1..10}; do
+            if curl -s --max-time 1 http://127.0.0.1:38575/ >/dev/null; then break; fi
+            sleep 1
+          done
+          cargo run --locked --release -- action --dry-run
+
+          # Exercise the explicit @openreview review mention path too, without
+          # posting a real GitHub comment or allowing Fix publication.
+          mention_event="${RUNNER_TEMP:?}/openreview-mention-event.json"
+          jq '{
+            action: "created",
+            repository: {full_name: .repository.full_name},
+            issue: {
+              number: .pull_request.number,
+              pull_request: {url: .pull_request.url}
+            },
+            comment: {
+              id: 1,
+              body: "@openreview review inspect this PR",
+              user: {login: .sender.login, type: "User"}
+            },
+            sender: {login: .sender.login, type: "User"}
+          }' "$GITHUB_EVENT_PATH" > "$mention_event"
+          GITHUB_EVENT_NAME=issue_comment GITHUB_EVENT_PATH="$mention_event" cargo run --locked --release -- action --dry-run

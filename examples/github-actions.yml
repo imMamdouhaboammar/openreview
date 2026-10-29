@@ -1,0 +1,62 @@
+# Copy into YOUR repository as .github/workflows/openreview.yml.
+# Replace @vX.Y.Z with a real audited OpenReview release tag after it is published.
+name: OpenReview BYOK agent
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# The Actions token is limited to the repository that owns this workflow.
+# Contents write is required for explicitly authorized Fix requests; the agent
+# independently checks the comment author's GitHub permissions before changing code.
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Distinct PRs are independent. Cancel earlier PR review after new pushes;
+  # never cancel Fix jobs mid-publication from a newer comment.
+  group: openreview-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  openreview:
+    # issue_comment is also emitted on issues; only accept PR comments.
+    # Skipping fork pull_request jobs prevents surprise missing-secret failures.
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@openreview')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       contains(github.event.comment.body, '@openreview'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The action executes its own pinned release code, not code from the PR.
+      - uses: imMamdouhaboammar/openreview@vX.Y.Z
+        with:
+          provider: openrouter
+          model: anthropic/claude-sonnet-4
+          bot_username: openreview
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          # Instead, choose one provider + its corresponding secret:
+          # provider: anthropic
+          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # provider: openai
+          # openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          # provider: opencode
+          # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          # provider: opencode_go
+          # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          # For a custom OpenCode connection (see docs/opencode.md):
+          # provider: opencode_custom
+          # model: gemini-3.8-flash
+          # opencode_custom_url: https://opencode.ai/inference/custom/conn_REPLACEID
+          # opencode_custom_protocol: gemini
+          # opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}

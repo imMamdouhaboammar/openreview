@@ -38,6 +38,10 @@ fn create_test_config() -> Config {
         model_name: "claude-3-7-sonnet-20250219".to_string(),
         anthropic_api_key: Some("dummy-key".to_string()),
         openai_api_key: None,
+        openrouter_api_key: None,
+        opencode_api_key: None,
+        opencode_custom_url: None,
+        opencode_custom_protocol: None,
         openai_base_url: None,
         gemini_api_key: None,
         ollama_base_url: None,
@@ -59,6 +63,62 @@ fn explicit_invalid_job_concurrency_is_not_silently_defaulted() {
         .unwrap();
     assert!(!output.status.success(), "invalid limit must fail startup");
     assert!(String::from_utf8_lossy(&output.stderr).contains("MAX_CONCURRENT_JOBS"));
+}
+
+#[test]
+fn actions_runner_rejects_missing_github_token_before_running_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let event_path = temp.path().join("event.json");
+    std::fs::write(
+        &event_path,
+        serde_json::to_vec(&json!({
+            "action": "created", "repository": {"full_name": "example/project"},
+            "issue": {"number": 17, "pull_request": {}},
+            "comment": {"id": 1, "body": "@openreview fix bug", "user": {"login": "maintainer", "type": "User"}},
+            "sender": {"login": "maintainer", "type": "User"}
+        })).unwrap(),
+    ).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .args(["action", "--dry-run"])
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_EVENT_NAME", "issue_comment")
+        .env("GITHUB_REPOSITORY", "example/project")
+        .env("GITHUB_EVENT_PATH", event_path)
+        .env_remove("GITHUB_TOKEN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GITHUB_TOKEN"), "{stderr}");
+}
+
+#[test]
+fn actions_runner_rejects_unsafe_local_sandbox_even_in_dry_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let event_path = temp.path().join("event.json");
+    std::fs::write(
+        &event_path,
+        serde_json::to_vec(&json!({
+            "action": "opened", "repository": {"full_name": "example/project"},
+            "sender": {"login": "author", "type": "User"},
+            "pull_request": {"number": 17, "head": {"ref": "feature", "sha": "abc123"}, "base": {"ref": "main"}}
+        })).unwrap(),
+    ).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+        .arg("action")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_EVENT_NAME", "pull_request")
+        .env("GITHUB_REPOSITORY", "example/project")
+        .env("GITHUB_EVENT_PATH", event_path)
+        .env("GITHUB_TOKEN", "dummy-token-not-real")
+        .env("ANTHROPIC_API_KEY", "dummy-llm-key-not-real")
+        .env("LLM_PROVIDER", "anthropic")
+        .env("SANDBOX_DRIVER", "local")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SANDBOX_DRIVER=docker"), "{stderr}");
 }
 
 fn sign_payload(secret: &str, body: &[u8]) -> String {
@@ -456,6 +516,7 @@ async fn test_agent_react_loop_review_mode_blocks_write_file() {
                 "path": "src/main.rs",
                 "content": "fn main() { println!(\"overwritten\"); }"
             }),
+            thought_signature: None,
         }],
         input_tokens: 100,
         output_tokens: 50,
@@ -510,6 +571,7 @@ async fn test_review_mode_rejects_shell_file_and_git_mutation_attempts() {
                 id: format!("forbidden-{i}"),
                 name: "bash".into(),
                 arguments: json!({"command": cmd}),
+                thought_signature: None,
             }],
             input_tokens: 1,
             output_tokens: 1,
@@ -556,6 +618,7 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
                 "path": "src/main.rs",
                 "content": "fn main() {\n    println!(\"hello clean code\");\n}\n"
             }),
+            thought_signature: None,
         }],
         input_tokens: 200,
         output_tokens: 50,
@@ -569,6 +632,7 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
             arguments: json!({
                 "body": "Fixed formatting and replaced code."
             }),
+            thought_signature: None,
         }],
         input_tokens: 250,
         output_tokens: 30,
@@ -611,6 +675,34 @@ async fn test_agent_react_loop_fix_mode_with_tools() {
 }
 
 #[tokio::test]
+async fn empty_model_response_must_not_complete_an_authorized_fix() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = MockLlm::new(vec![LlmResponse {
+        content: Some("   ".into()),
+        tool_calls: vec![],
+        input_tokens: 10,
+        output_tokens: 0,
+    }]);
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Fix,
+        true,
+        &[],
+        None,
+    );
+    let error = runner.run(vec![]).await.unwrap_err();
+    assert!(
+        error.to_string().contains("empty response"),
+        "empty inference output must fail instead of claiming Fix completion: {error}"
+    );
+}
+
+#[tokio::test]
 async fn test_agent_step_limit_exceeded() {
     let temp = tempfile::tempdir().unwrap();
     let sandbox = LocalSandbox::new(temp, "owner/repo".to_string(), String::new());
@@ -624,6 +716,7 @@ async fn test_agent_step_limit_exceeded() {
                 id: format!("call_{i}"),
                 name: "bash".to_string(),
                 arguments: json!({ "command": "echo loop" }),
+                thought_signature: None,
             }],
             input_tokens: 50,
             output_tokens: 20,
@@ -653,6 +746,181 @@ async fn test_agent_step_limit_exceeded() {
         AgentTerminationReason::StepLimitExceeded
     );
     assert!(result.error_message.unwrap().contains("20 steps"));
+}
+
+/// A Review may spend its entire tool budget exploring a PR. The last turn
+/// must ask for a bounded, evidence-qualified report instead of offering more
+/// tools and silently reaching the step limit.
+#[tokio::test]
+async fn review_uses_final_step_for_evidence_qualified_report() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct BudgetAwareLlm {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for BudgetAwareLlm {
+        async fn complete(
+            &self,
+            system: &str,
+            _messages: &[ChatMessage],
+            tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 20 {
+                assert!(tools.is_empty(), "final Review step must not offer tools");
+                assert!(system.contains("unverified"));
+                Ok(LlmResponse {
+                    content: Some("Review incomplete: areas not checked remain unverified.".into()),
+                    tool_calls: vec![],
+                    input_tokens: 10,
+                    output_tokens: 20,
+                })
+            } else {
+                assert!(!tools.is_empty());
+                Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: format!("read-{call}"),
+                        name: "readFile".into(),
+                        arguments: json!({"path": "src/lib.rs"}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 5,
+                    output_tokens: 5,
+                })
+            }
+        }
+
+        fn model_name(&self) -> &str {
+            "budget-aware-mock"
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    sandbox
+        .write_file("src/lib.rs", "pub fn sum() {}\n")
+        .await
+        .unwrap();
+    let llm = BudgetAwareLlm {
+        calls: AtomicUsize::new(0),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 20);
+    assert_eq!(result.replies_posted, 1);
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 20);
+}
+
+#[tokio::test]
+async fn review_stops_after_a_successfully_published_reply() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReplyOnceLlm(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ReplyOnceLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(call, 0, "review should stop once its report is delivered");
+            Ok(LlmResponse {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: "reply-1".into(),
+                    name: "reply".into(),
+                    arguments: json!({"body": "P2: Missing validation in src/lib.rs:5"}),
+                    thought_signature: None,
+                }],
+                input_tokens: 10,
+                output_tokens: 12,
+            })
+        }
+
+        fn model_name(&self) -> &str {
+            "reply-once-mock"
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = ReplyOnceLlm(AtomicUsize::new(0));
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 1);
+    assert_eq!(result.replies_posted, 1);
+    assert_eq!(llm.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn empty_reply_tool_does_not_count_as_a_delivered_review() {
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let llm = MockLlm::new(vec![
+        LlmResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "empty-reply".into(),
+                name: "reply".into(),
+                arguments: json!({"body": " \n "}),
+                thought_signature: None,
+            }],
+            input_tokens: 1,
+            output_tokens: 1,
+        },
+        LlmResponse {
+            content: Some("No verified findings in the inspected diff.".into()),
+            tool_calls: vec![],
+            input_tokens: 2,
+            output_tokens: 2,
+        },
+    ]);
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+
+    let result = runner.run(vec![]).await.unwrap();
+    assert!(result.success);
+    assert_eq!(result.steps_taken, 2);
+    assert_eq!(result.replies_posted, 1);
 }
 
 #[test]
@@ -794,8 +1062,8 @@ async fn test_pr_context_formatting() {
         is_fork: true,
         diff: "diff --git a/src/lib.rs b/src/lib.rs\n+ safe_code();".to_string(),
         changed_files: vec![openreview::github::types::ChangedFile {
-            previous_filename: None,
             filename: "src/lib.rs".to_string(),
+            previous_filename: None,
             status: "modified".to_string(),
             additions: 1,
             deletions: 0,
