@@ -1,337 +1,343 @@
 <p align="center">
-  <img src="assets/openreview-mark.svg" alt="OpenReview logo" width="88" height="88" />
+  <img src="assets/openreview-mark.svg" alt="OpenReview logo: code brackets framing a verification check" width="92" height="92" />
 </p>
 
 <h1 align="center">OpenReview</h1>
 
 <p align="center"><strong>Review with evidence. Fix with proof.</strong></p>
 
-OpenReview reviews pull requests and repairs explicitly authorized issues in an isolated workspace. It connects to GitHub through a GitHub App or Action and supports multiple AI providers. A Review cannot edit code; a Fix must pass verification before a non-force push.
+<p align="center">
+  <a href="https://github.com/imMamdouhaboammar/openreview/actions/workflows/ci.yml"><img src="https://github.com/imMamdouhaboammar/openreview/actions/workflows/ci.yml/badge.svg" alt="OpenReview CI" /></a>
+  <img src="https://img.shields.io/badge/core-Rust-CE422B?logo=rust" alt="Rust core" />
+  <img src="https://img.shields.io/badge/inference-bring%20your%20own%20key-22C5B8" alt="Bring your own AI key" />
+  <img src="https://img.shields.io/badge/deployment-GitHub%20Action%20%7C%20self--hosted-101828" alt="GitHub Action or self-hosted" />
+</p>
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Dev as Collaborator / Contributor
-    participant GH as GitHub API & Webhooks
-    participant Svc as OpenReview Daemon
-    participant SB as Isolated Sandbox
-    participant LLM as Multi-Provider LLM
-
-    Dev->>GH: Mentions @openreview [review | fix <instructions>]
-    GH->>Svc: POST /api/webhooks/github (HMAC-SHA256 verified)
-    Svc->>Svc: Check X-GitHub-Delivery deduplication & parse command
-    Svc->>GH: Verify actor permissions (write/admin required for Fix)
-    Svc->>GH: Fetch dynamic Installation Access Token (scoped per install)
-    Svc->>GH: Fetch authoritative PR diff & changed files
-    Svc->>SB: Provision sandbox & clone branch (token stripped from git config)
-    loop ReAct Loop (Mode-Enforced Tools)
-        Svc->>LLM: Prompt + authoritative diff + permitted tools
-        LLM-->>Svc: Tool invocation (readFile, bash, writeFile [Fix only], reply)
-        Svc->>SB: Execute inside sanitized sandbox
-        SB-->>Svc: Unicode-safe truncated output
-    end
-    opt Mode == Fix & Changes Present
-        Svc->>SB: Execute automated verification gate (tests/linter)
-        alt Tests Passed
-            Svc->>GH: Commit & push verified changes to branch
-            Svc->>GH: Post verification report & commit SHA
-        else Tests Failed
-            Svc->>GH: Block push & report failure diagnostic to PR
-        end
-    end
-    Svc->>SB: Teardown & destroy ephemeral sandbox
-```
+<p align="center">
+  <a href="#see-it-in-a-pull-request">See it in a PR</a> ·
+  <a href="#start-with-github-actions">Start with GitHub Actions</a> ·
+  <a href="#run-your-own-github-app">Self-host</a> ·
+  <a href="#the-engineering-underneath">Architecture</a> ·
+  <a href="#what-openreview-does-not-promise">Honest limits</a>
+</p>
 
 ---
 
-## Core Capabilities
+## AI can write a fix in seconds. Who proves it belongs in your branch?
 
-### Capability A — AI Code Review (Read-Only)
-* **On-Demand Precision Review:** Triggered via `@openreview review` or unqualified `@openreview` mentions.
-* **Evidence-Based Findings:** Analyzes authoritative PR diffs for runtime bugs, security vulnerabilities, performance regressions, race conditions, missing validation, and test gaps.
-* **Review Suggestions:** Produces line-referenced findings and suggestion Markdown in PR comments. Native inline suggestions are not yet wired into the agent's reply tool.
-* **Read-Only Enforcement:** Review mode exposes file reads and review comments only; arbitrary shell and file-writing tools are not available.
+An AI review can sound convincing and still be wrong. A proposed patch can look clean and still break a test. And a bot that can read your repository does not automatically deserve permission to modify it.
 
-### Capability B — Autonomous Code Fixing (Verified Remediation)
-* **Explicit Autonomous Fixing:** Triggered via `@openreview fix` or `@openreview fix <instructions>`.
-* **Collaborator Authorization Required:** Evaluates the requesting user's GitHub repository permissions. Only users with `write`, `maintain`, or `admin` access can initiate Fix workflows. Unauthorized requests are rejected.
-* **Pre-Publish Verification Gate:** Attempts a detected test command (Cargo, Bun, NPM, Go, Pytest) inside the sandbox. A missing framework, unavailable executable, failed command or incomplete run blocks publication. A zero exit status alone is insufficient: standard runner output must also report evidence of at least one executed test (for Go, a successful tested package). **Limitation:** Test output can be forged by repository code and this is not a coverage guarantee; teams requiring minimum coverage or trusted CI must enforce them separately. The sandbox image includes Cargo, npm, Go, and Pytest; Bun requires an operator-provided image.
-* **Attributable Commits:** Verified fixes are committed and pushed to the PR branch with an audit trail linking the commit to the requesting actor.
+**OpenReview is an open-source, Rust-based GitHub pull request agent built around those three problems.**
 
----
+It investigates changes, explains findings against the actual PR diff, and, **only when an authorized collaborator explicitly asks**, attempts a fix in an isolated environment. Before publishing code, it must pass a verification gate and confirm what actually reached the remote branch.
 
-## Command & Interaction Model
+The idea is simple: **confidence is not evidence, and generated code is not a verified repair.**
 
-OpenReview recognizes commands in PR issue comments and review comment threads:
+### A note from Mamdouh, the creator
 
-| Command | Workflow Mode | Permission Required | Behavior |
-| :--- | :--- | :--- | :--- |
-| `@openreview review` | `Review` | Read | Conducts read-only code review; publishes findings. |
-| `@openreview suggest` | `Review` | Read | Suggests improvements and optimizations without editing files. |
-| `@openreview fix` | `Fix` | Write / Admin | Investigates issues, modifies files, runs verification tests, and pushes verified fixes. |
-| `@openreview fix <task>` | `Fix` | Write / Admin | Applies specific remediation (e.g. `@openreview fix remove unwrap()`). |
-| `@openreview <text>` | `Review` | Read | Unqualified mention defaults safely to read-only Review mode. |
+> My background is in brand strategy, copywriting, and digital systems. In those fields, I learned to question a polished claim: *What supports it? What happens when we test it? What are we leaving out?*
+>
+> I brought that same instinct to AI-assisted engineering.
+>
+> I didn't want another reviewer that simply produces a long list of opinions. I wanted to design an agent that knows the difference between **finding a possible issue**, **being allowed to act**, **changing code**, and **proving that the change was published**.
+>
+> That's why OpenReview has separate Review and Fix modes. That's why the agent doesn't hold the publishing credentials. That's why a successful command exit is not automatically treated as proof that tests ran. And that's why the project reports what it *couldn't* verify, too.
+>
+> I have been building this in iterations: starting with the PR workflow, testing it against real GitHub interactions, hardening the permission and sandbox boundaries, adding GitHub-hosted and self-hosted routes, and introducing deeper investigation tooling. The decisions are visible in the code and commit history. **The goal is not to make AI sound certain. It's to make its work inspectable.**
+>
+> **Mamdouh Aboammar** · [GitHub](https://github.com/imMamdouhaboammar)
 
-### Fix Approval
-An authorized collaborator approves a proposed change by leaving an explicit `@openreview fix <instructions>` comment. GitHub Apps do not receive a `reaction` webhook event; reacting with an emoji does **not** initiate or cancel a workflow. Reaction polling and proposal-specific approvals are not implemented.
+### A few decisions you can trace in public
 
----
+- [**PR #1**](https://github.com/imMamdouhaboammar/openreview/pull/1): Hardened remediation, publishing checks, isolation, and multi-installation controls. A Fix needed to be an auditable operation, not a model response with write access.
+- [**PR #2**](https://github.com/imMamdouhaboammar/openreview/pull/2): Added a GitHub-hosted, bring-your-own-key route. Running your own server should be a choice, not the price of trying the agent.
+- [**PR #3**](https://github.com/imMamdouhaboammar/openreview/pull/3): Defined the visual identity and evidence-first language of the PR comments. How a system admits uncertainty is part of its design.
+- [**PR #5**](https://github.com/imMamdouhaboammar/openreview/pull/5): Added the separate Deep Digger investigation workbench. Hard problems need hypotheses, counterevidence, and reproducible cases.
 
-## Security Architecture & Sandbox Isolation
+## See it in a pull request
 
-1. **Mode Enforcement:** Review mode has no arbitrary shell or file-write tool and mounts the repository read-only inside Docker. Authorized Fix mode retains a writable repository and test execution.
-2. **Trust Boundary:** The webhook daemon only starts with a dedicated, rootless Docker backend. Local mode is for trusted CLI development; it is not process isolation and cannot publish fixes.
-3. **Credential Isolation:** The untrusted container cannot mount Git metadata, receive installation tokens, or access the service's process environment. The host controls credentials and pushing.
-4. **Path Protection:** File tool paths reject `..`, absolute paths, and symlinks; Docker file operations run inside the container to avoid host path races.
-5. **Container Restrictions:** Job containers have no network, read-only root filesystems, a read-only Review workspace (writable only for Fix), CPU/memory/PID limits, dropped capabilities, and teardown on drop. Missing offline dependencies block publishing.
-6. **Job Metadata:** Jobs and deduplication IDs persist in `/data/openreview-jobs.json`. A restart marks interrupted jobs failed; automatic execution replay is intentionally not implemented because partial publishing is not safely idempotent.
+OpenReview recognizes mentions in PR comments and review-comment threads. With the default handle:
 
----
+| You write | The agent can do | It cannot do |
+| --- | --- | --- |
+| `@openreview review` | Inspect the PR, read relevant files, report findings | Edit files or execute arbitrary shell commands |
+| `@openreview suggest` | Recommend a specific change, with supporting reasoning | Apply the recommendation |
+| `@openreview fix` | Investigate, edit, run verification, and attempt to publish a passing repair | Bypass contributor authorization or verification |
+| `@openreview fix handle empty input in the parser` | Work toward the named repair and report the result | Promise that an unverified patch was published |
+| `@openreview <question>` | Respond in the default, read-only Review mode | Silently escalate to Fix |
 
-## Multi-Installation Architecture
+For Fix, the person making the request needs GitHub `write`, `maintain`, or `admin` permission. OpenReview rechecks authorization before publishing.
 
-OpenReview natively supports multi-tenant GitHub App deployments:
-* **Dynamic Installation Scoping:** Installation IDs are resolved directly from verified incoming webhooks (`payload.installation.id`).
-* **Isolated Token Manager:** Generates and caches short-lived installation access tokens per installation ID.
-* **Cross-Installation Isolation:** Repositories are validated against the installation token; cross-tenant access is strictly prohibited.
-* **Operator Approval:** `ALLOWED_INSTALLATION_IDS` is a mandatory default-deny *admission policy* for webhook jobs. A valid GitHub webhook signature proves sender authenticity, not that the operator agrees to run code or pay for LLM requests. New installations are ignored until explicitly approved; an empty list accepts no jobs.
-* **CLI Fallback:** Standalone CLI commands use `GITHUB_APP_INSTALLATION_ID` or `GITHUB_TOKEN` without weakening webhook security.
+<details>
+<summary><strong>What a credible result looks like</strong></summary>
 
-> **GitHub App visibility:** A **Private App** can only be installed on its owning account. To support the same self-hosted App across independent personal accounts and organizations, configure the App as **Public** in GitHub settings *and* approve the intended installation IDs in `ALLOWED_INSTALLATION_IDS`. Public visibility alone must never grant workload access. Each self-hosted operator registers and controls its **own** App credentials; do not distribute a shared central private key to customer-managed servers.
+**Review**
 
----
+> **Finding:** `src/parser.rs:84` can panic if the expected header is absent.
+>
+> **Reason:** The value reaches `unwrap()` without validation.
+>
+> **Suggested repair:** Return a typed error and cover the empty-header case.
+>
+> **Verification:** Static review only. Tests not run.
 
-## Endpoints
+**Fix**
 
-| Method | Path | Description | Authentication |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/webhooks/github` | Ingests GitHub App webhook events | Constant-time HMAC-SHA256 (`X-Hub-Signature-256`) |
-| `GET` | `/api/manifest` | Reference JSON for manual GitHub App registration (not a registration endpoint) | None |
-| `GET` | `/api/jobs` | Lists job metadata across installations (operator only) | `Authorization: Bearer <JOB_API_TOKEN>` |
-| `GET` | `/api/jobs/{id}` | Queries job status and diagnostics (operator only) | `Authorization: Bearer <JOB_API_TOKEN>` |
-| `GET` | `/health` | Liveness & readiness probe | None |
-| `GET` | `/metrics` | Prometheus exposition format metrics | None |
-| `GET` | `/` | Service overview landing interface | None |
+> **Changed:** Guarded the missing-header path and added a regression test.
+>
+> **Verification:** Test command completed with evidence that tests executed.
+>
+> **Publication:** The remote PR head was checked against the pushed commit.
 
----
+These are illustrations of the reporting style, **not results claimed from a particular PR**. Native GitHub inline suggestions are not currently wired into the agent's reply tool; suggestions appear as PR comment Markdown.
 
-## Configuration & Environment Variables
+</details>
 
-Copy `.env.example` to `.env`:
+## The decisions behind the design
 
-```bash
-# Server Network Settings
-HOST=0.0.0.0
-PORT=3000
-BOT_USERNAME=openreview
+OpenReview grew around a set of engineering boundaries, not a longer system prompt.
 
-# GitHub App Authentication
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-GITHUB_APP_WEBHOOK_SECRET=your_hmac_webhook_secret
+| Question I wanted the system to answer | Design decision in OpenReview |
+| --- | --- |
+| **Can a reviewer change something it was only asked to inspect?** | No. Review exposes `readFile`, `loadSkill`, and `reply`. `bash` and `writeFile` are reserved for authorized Fix. |
+| **Can model output become a GitHub write operation by accident?** | No. The trusted host controls GitHub credentials and publication; the untrusted workspace does not receive installation tokens. |
+| **What if the repository contains hostile code?** | Agent execution uses a dedicated rootless Docker daemon, disabled sandbox networking, restricted mounts, dropped capabilities, and resource limits. Unsupported isolation blocks execution. |
+| **What if a test command exits successfully without running tests?** | The verification gate looks for runner-specific evidence of executed tests, not only exit code zero. Missing or failed verification blocks the push. |
+| **What if permissions or the PR branch change mid-run?** | The publisher rechecks the actor, branch protection, expected head SHA, and remote result. No force push. |
+| **What if a public GitHub App gets installed by someone I haven't approved?** | A valid webhook signature is necessary but not sufficient. Self-hosted operators admit installation IDs explicitly. |
+| **What if the AI is uncertain?** | Report what was inspected, what failed, and what was not verified. Don't invent a green check. |
 
-# LLM Engine ("anthropic" | "openai" | "openrouter" | "opencode" | "opencode_go" | "opencode_custom" | "gemini" | "ollama")
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-3-7-sonnet-20250219
-ANTHROPIC_API_KEY=sk-ant-...
-# For OpenRouter set LLM_PROVIDER=openrouter, LLM_MODEL=provider/model, OPENROUTER_API_KEY=...
-# For OpenCode Console set LLM_PROVIDER=opencode, LLM_MODEL=<model>, OPENCODE_API_KEY=...
-# For OpenCode Go set LLM_PROVIDER=opencode_go, LLM_MODEL=<Go-plan-model>, OPENCODE_API_KEY=...
-# For any OpenCode Custom Provider set LLM_PROVIDER=opencode_custom,
-# LLM_MODEL=<enabled-model>, OPENCODE_CUSTOM_URL=<Console connection URL>,
-# OPENCODE_CUSTOM_PROTOCOL=<chat|responses|anthropic|gemini>, OPENCODE_API_KEY=...
-# Details: docs/opencode.md
+The important distinction: **an AI tool proposes actions; the workflow decides which actions are allowed and whether a result can be published.**
 
-# Secure webhook execution requires an isolated rootless Docker engine
-SANDBOX_DRIVER=docker
-SANDBOX_DOCKER_SOCKET=/run/user/10001/docker.sock
-SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces
-JOB_API_TOKEN=replace_with_at_least_32_random_characters
-MAX_CONCURRENT_JOBS=10
-```
+## Start with GitHub Actions
 
----
+<strong>No VPS or GitHub App registration required.</strong> Each repository runs OpenReview on its own GitHub-hosted runner with its own AI provider key.
 
-## Deployment Guide
+1. Add a provider key under **Repository → Settings → Secrets and variables → Actions**. For example, create `OPENROUTER_API_KEY`.
+2. Copy [`examples/github-actions.yml`](examples/github-actions.yml) into your repository as `.github/workflows/openreview.yml`.
+3. In that workflow, replace the example `@vX.Y.Z` placeholder with a **real, reviewed ref**. The following source commit is an existing immutable starting point:
 
-### Option 1: Docker Compose (Recommended for Production)
-
-1. Choose a public DNS name, for example `review.example.com`, pointing to your VPS. **Register your own GitHub App using a prefilled GitHub registration link** (no credentials or tokens are sent to OpenReview):
-
-   ```bash
-   # Build once using the VPS's normal Docker service-image builder.
-   docker build -t openreview-service:local .
-   docker run --rm openreview-service:local github-app-url \
-     --domain https://review.example.com --name "OpenReview MyTeam"
-   # For installation on multiple independent accounts / organizations, add --public.
-   # To register the App under an organization, add --org MY_ORG.
+   ```yaml
+   - uses: imMamdouhaboammar/openreview@855730c116038d41d8c1b2028c2a7cee83a2ca91
+     with:
+       provider: openrouter
+       model: anthropic/claude-sonnet-4
+       bot_username: openreview
+       openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
    ```
 
-   Open the printed `github.com` link, review the permissions/events, and create the App. GitHub still requires you to **set a strong webhook secret, note the App ID and generate a private key** in its App settings. GitHub's URL-parameter registration does not support setting a webhook secret; this is deliberately not automated. This is a prefilled setup link, **not** a completed GitHub registration or a manifest-code conversion flow ([GitHub documentation](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-using-url-parameters)). A unique name may be required if your first choice is taken. Install the App into a test repository to obtain its numeric installation ID.
+   This replaces only the `uses` step in the complete [example workflow](examples/github-actions.yml); keep its event filters, job permissions, and concurrency settings. The pinned ref identifies source code, **not a claim that a numbered release has been published**. Choose an exact model your provider account can access.
+4. Confirm that repository/org policy allows the action and that the workflow has `contents: write`, `issues: write`, and `pull-requests: write` permissions. Those permissions allow Fix; the agent separately checks the requesting user's authority.
+5. Open a same-repository PR and watch the **Actions** tab, or comment `@openreview review` on a PR to request a review. For a targeted repair, an authorized collaborator can comment `@openreview fix <task>`.
 
-   Configure `.env` with the GitHub values, your LLM key, a random `JOB_API_TOKEN` of at least 32 characters, and only the installation IDs you explicitly authorize. **Set `BOT_USERNAME` to the registered App's actual mention handle** (usually derived from the App slug), not necessarily the example `openreview`; otherwise comments will not trigger the bot. Keep the private key on the host; do not paste it into GitHub issues or logs.
+> **Status: experimental on GitHub-hosted runners.** The Action builds the Rust agent and a rootless sandbox, then runs an isolation smoke test. If the runner cannot enforce the required cgroup v2, filesystem, or network boundaries, it stops. A passing Docker build is not proof that this environment is safe. Validate the full workflow on your runner before relying on Fix.
 
-   ```bash
-   cp .env.example .env
-   # Edit .env with the registered App ID, escaped PEM private key, webhook secret,
-   # allowed installation IDs, LLM API key, job API token and sandbox paths.
-   ```
+**Know the GitHub Actions boundaries:**
 
-2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Rootless Docker needs **cgroup v2 with systemd cgroup driver** to enforce the configured memory, CPU and PID limits; startup and job admission reject unsupported configurations ([Docker's resource-limit documentation](https://docs.docker.com/engine/security/rootless/tips/#limiting-resources)). Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
+- A workflow installed in your repository is **not** a separately registered GitHub account named `@openreview`. The mention string triggers the workflow; replies come from GitHub's Actions identity.
+- Forked `pull_request` events do not receive normal repository secrets. The example skips their automatic review. A trusted maintainer may request read-only Review via a PR comment, but Fixing a fork branch is denied.
+- Changes pushed with the default `GITHUB_TOKEN` normally do **not** trigger fresh `push` or `pull_request` Actions runs. Require manual CI re-runs or a separately reviewed token strategy before merging if your policy needs fresh checks.
+- Hosted jobs are transient. They do not provide an always-on webhook service, a persistent job queue, or a durable cross-run deduplication store.
+- Provider inference and GitHub Actions usage are subject to your account's quotas and billing.
 
-3. Use **two separate Docker daemons**. The rootful host daemon builds and runs the *trusted OpenReview service*, while the dedicated rootless daemon builds and runs *untrusted agent sandboxes*. Keep their sockets separate. In the example below, the host's rootful daemon is at `/var/run/docker.sock` and the isolated daemon belongs to UID 10001:
+## Bring the model you trust
 
-   ```bash
-   # Trusted service image and Compose must use the host's rootful daemon.
-   DOCKER_HOST=unix:///var/run/docker.sock docker build -t openreview-service:local .
+OpenReview is not tied to one AI vendor. Configure an explicit model and supply the corresponding key; the key stays in the trusted workflow or service environment, outside the untrusted sandbox.
 
-   # Untrusted execution image and smoke test must use the rootless daemon.
-   DOCKER_HOST=unix:///run/user/10001/docker.sock docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
-   DOCKER_HOST=unix:///run/user/10001/docker.sock SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces \
-     ./scripts/verify-rootless-sandbox.sh
-
-   # Explicitly select the rootful daemon for Compose, even when the CLI's
-   # default context points to rootless Docker.
-   DOCKER_HOST=unix:///var/run/docker.sock docker compose up -d
-   ```
-
-   The service container still connects **only** to the rootless daemon through `SANDBOX_DOCKER_SOCKET` mounted at `/run/openreview/docker.sock`; Compose sets its internal `DOCKER_HOST` to that socket. Never mount `/var/run/docker.sock` into the service container. If your trusted host daemon has a nonstandard socket, substitute its explicit socket path in the first and last commands. Ensure that the rootless socket and shared workspace can be accessed by the service's UID 10001, while the rootless daemon maps container UID 0 to its host owner UID 10001.
-
-   Run the smoke test **as the same unprivileged user that owns the rootless Docker daemon** (UID 10001 in this example), not as host root. Its temporary workspace is mode 0700, and the container's user namespace must map to that owner to verify real read/write behavior.
-
-   The rootless security smoke test must pass on the **actual Docker host** before serving untrusted jobs. It exercises read-only Review mounts, writable Fix mounts, effective resource limits, disabled networking, absence of injected App tokens and cleanup. Passing this script does not replace real GitHub App permissions and Fix publication integration tests.
-
-4. Verify service health:
-   ```bash
-   curl -f http://localhost:3000/health
-   ```
-
-   Compose publishes the service only on the host's loopback interface (`127.0.0.1:3000`). Place it behind an HTTPS reverse proxy with valid TLS, a stable public DNS name, request-size limits, and access to `/api/webhooks/github`. Never expose `/api/jobs`, `/api/jobs/{id}` or `/metrics` to the public internet; access the operator API through an SSH tunnel or a separately authenticated administrative route. Test the configured rootless daemon before accepting untrusted workloads.
-
-   For example, if the VPS uses **Caddy** as its host reverse proxy, this Caddyfile routes public traffic while keeping job/metrics endpoints private:
-
-   ```caddyfile
-   review.example.com {
-       @operator path /api/jobs /api/jobs/* /metrics
-       respond @operator 403
-       reverse_proxy 127.0.0.1:3000
-   }
-   ```
-
-5. In GitHub App settings, verify that webhook URL is `https://YOUR_DOMAIN/api/webhooks/github`, the secret matches `.env`, and repository permissions include Contents (read/write), Issues (read/write), Pull requests (read/write) and Metadata (read). Confirm events include `issue_comment`, `pull_request`, `pull_request_review_comment`, `installation` and `installation_repositories`. The `/api/manifest` endpoint remains a reference template only.
-
-6. Install the App on the desired repositories/accounts. For one owning account, **Private** visibility is sufficient; for *multiple unrelated organizations*, change visibility to **Public** in GitHub before installation. Locate each approved numeric installation ID from GitHub's installation settings or the signed installation webhook; add only those IDs, for example `ALLOWED_INSTALLATION_IDS=123456,789012`, to `.env`. Restart with `docker compose up -d` and verify an authorized `@YOUR_APP_HANDLE review` command in a test PR, replacing the handle with the `BOT_USERNAME` value. Unapproved installations receive no jobs, even if their webhook is validly signed. Before any authorized `@YOUR_APP_HANDLE fix`, separately confirm the bot has installation-scoped write permission and the rootless sandbox security smoke test passes on the real daemon.
-
-### Option 2: GitHub-hosted Actions (no VPS; bring your own AI key)
-
-This alternative runs the **same Rust Review and authorized Fix engine** on a GitHub-hosted Actions runner inside each user's own repository. It does not require a hosted webhook, GitHub App registration, or a central service private key. It is a **repository-installed workflow**, not a centrally installed GitHub App: each repository owner must opt in and add an AI provider key in their own repository's Actions Secrets. GitHub Actions usage and AI inference are charged/limited according to the respective user's plans; no perpetual free hosting is implied.
-
-1. In the target repository, go to **Settings → Secrets and variables → Actions → New repository secret**. Add one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OPENCODE_API_KEY` for the desired provider. These secrets are not passed into untrusted code containers.
-2. Copy [`examples/github-actions.yml`](examples/github-actions.yml) into **`.github/workflows/openreview.yml`** in that repository. Replace the example `@vX.Y.Z` with an *actual released and reviewed OpenReview version* when available; a placeholder is not runnable. Select `provider`, `model` and the matching `secrets.*` input. You may remove the `pull_request` trigger if you only want on-demand reviews through comments.
-3. Check repository/org settings permit GitHub Actions to use the specified third-party action and that the workflow has the listed **Contents write, Issues write, Pull requests write** permissions. This authority is needed for Fix and posting reviews. The agent independently rechecks that the **comment author** has `write`, `maintain` or `admin` access to initiate Fix; a simple `@openreview` mention only starts Review. Ensure `bot_username` matches the mention people will type (the workflow is *not* a separately registered `@openreview` GitHub user).
-4. On a PR, leave `@openreview review`, `@openreview suggest` or `@openreview fix <instructions>`. The `pull_request` trigger also starts read-only Review on same-repository PR updates. Look in the Actions run logs for success/failure; the agent may post PR findings, and authorized Fix may commit to the **PR's own source branch**, after required verification. Fix for fork PRs is denied. The sandbox smoke test refuses to run if rootless Docker's filesystem, network or resource boundary cannot be verified.
-
-**Provider selection:**
-
-| `provider` / `LLM_PROVIDER` | Required Actions secret / env variable | `model` / `LLM_MODEL` |
+| `provider` / `LLM_PROVIDER` | Required key | Model selection |
 | --- | --- | --- |
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic model ID |
 | `openai` | `OPENAI_API_KEY` | OpenAI model ID |
-| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter ID such as `openai/gpt-4o-mini` |
-| `opencode` | `OPENCODE_API_KEY` | Accessible **OpenCode Console** Paygo model |
-| `opencode_go` | `OPENCODE_API_KEY` | Accessible **OpenCode Go** plan model |
-| `opencode_custom` | `OPENCODE_API_KEY` plus connection URL and protocol | Model enabled on your **OpenCode Custom Provider** |
+| `openrouter` | `OPENROUTER_API_KEY` | Provider-prefixed OpenRouter model ID |
+| `opencode` | `OPENCODE_API_KEY` | OpenCode Console model accessible to your account |
+| `opencode_go` | `OPENCODE_API_KEY` | Eligible OpenCode Go model |
+| `opencode_custom` | `OPENCODE_API_KEY`, connection URL, and protocol | Model enabled on that custom connection |
 | `gemini` | `GEMINI_API_KEY` | Gemini model ID |
+| `ollama` | Locally configured endpoint | Model available on your Ollama server |
 
-For step-by-step setup, protocol selection, security rules and a GitHub Action example, see **[Using OpenCode and Custom Providers](docs/opencode.md)**.
+OpenCode here is an **inference API integration**, not an invocation of the OpenCode CLI coding agent. OpenCode Custom supports `chat`, `responses`, `anthropic`, and `gemini` protocols. Provider access, quotas, and model names can change. See [OpenCode and Custom Provider setup](docs/opencode.md) for the exact configuration.
 
-OpenCode Console is an **inference provider** here, not a separate invocation of the OpenCode CLI agent. OpenCode's free-tier models may only be accessible from the official OpenCode CLI, not a third-party client; use an eligible paid/Go model and account. The Go adapter sends a stable `x-opencode-session` value for each agent run. OpenRouter and OpenCode models **must** be configured explicitly: there is no arbitrary default model. Provider APIs, quotas, and model availability can change; try a test PR first.
+## Run your own GitHub App
 
-**Important security and operational limitations:**
+Self-hosting is for teams that want their own app identity, HTTPS webhook endpoint, installation approvals, and persistent job metadata. **Every operator registers and secures their own GitHub App.**
 
-- GitHub-hosted rootless Docker must actually enforce cgroup v2 resource limits. The action and CI run the isolation smoke test and **fail closed** if the runner does not support it. Passing a Docker build alone is insufficient. Until a real hosted runner run passes, this installation mode is **experimental**.
-- A workflow triggered by a forked `pull_request` does not receive repository Actions secrets. The example skips automatic review of fork PRs; a trusted maintainer's `issue_comment` event on a fork PR may run Review, but it **cannot** Fix the fork branch. Never add `pull_request_target` with untrusted PR code checked out into the trusted job.
-- `GITHUB_TOKEN` changes normally **do not trigger new Actions `push`/`pull_request` workflow runs**. The agent performs its own verification before publishing; if a team requires fresh CI checks on every Fix commit, add a separately reviewed installation-token strategy or require manual re-run before merging. Branch protection and repository policy still apply; no force pushes are made.
-- Each job is transient. Unlike the self-hosted service, this mode does not offer a persistent webhook queue, delivery deduplication database, centralized installation management, or an always-on API. The workflow's concurrency group prevents simultaneous runs on the same PR while queued; it is **not** a durable exactly-once guarantee.
-- The action builds the Rust binary from its checked-out release source. This consumes runner minutes; it is not a prebuilt, published Marketplace binary. Pin a verified immutable commit SHA for stronger supply-chain assurance once an audited release exists.
+### 1. Prepare the service and App
 
-### Option 3: Standalone Binary
+On a machine with Docker, a public DNS name, and a TLS reverse proxy:
 
-1. Build release binary:
-   ```bash
-   cargo build --release
-   ```
-
-2. Export the environment, then verify local configuration:
-   ```bash
-   set -a
-   . ./.env
-   set +a
-   ./target/release/openreview verify-config
-   ```
-
-3. Start server daemon:
-   ```bash
-   ./target/release/openreview serve --host 0.0.0.0 --port 3000
-   ```
-
-### Option 3: Standalone CLI Review (CI / Developer Workstation)
-
-Run an on-demand review without starting a webhook server:
 ```bash
-openreview review --repo owner/my-repo --pr 42
+cp .env.example .env
+docker build -t openreview-service:local .
+docker run --rm openreview-service:local github-app-url \
+  --domain https://review.example.com --name "OpenReview MyTeam"
 ```
 
-Run in dry-run mode (guarantees zero comments or pushes to remote):
-```bash
-openreview review --repo owner/my-repo --pr 42 --dry-run
+The last command prints a prefilled **GitHub-owned registration link**. Open it, create the App, then set its webhook secret and generate its private key in GitHub settings. The helper cannot create those secrets or finish registration for you. Use `--org ORG` to register under an organization, or `--public` if you intend cross-account installations.
+
+Set these values in `.env`, using [`.env.example`](.env.example) for the full reference:
+
+```dotenv
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+GITHUB_APP_WEBHOOK_SECRET=replace_with_a_random_secret
+BOT_USERNAME=your_real_app_mention_handle
+ALLOWED_INSTALLATION_IDS=123456
+LLM_PROVIDER=openrouter
+LLM_MODEL=your/provider-model
+OPENROUTER_API_KEY=your_key
+JOB_API_TOKEN=replace_with_at_least_32_random_characters
+SANDBOX_DRIVER=docker
+SANDBOX_DOCKER_SOCKET=/run/user/10001/docker.sock
+SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces
 ```
 
----
+Keep `.env` and private keys out of source control. Set `ALLOWED_INSTALLATION_IDS` only after installing the App and identifying the installation ID; **empty means no webhook jobs are admitted**. The mention handle must match the actual App account, not an assumed `openreview` username.
 
-## GitHub App Registration (Prefilled URL or Manual Setup)
+### 2. Separate the trusted service from the untrusted sandbox
 
-Generate the personalized setup URL locally with:
+OpenReview deliberately uses **two Docker daemons**:
+
+- A normal host daemon builds/runs the **trusted service**, which handles GitHub credentials and publication.
+- A **dedicated rootless Docker daemon**, accessible to the service's unprivileged UID 10001, executes repository code without receiving those credentials.
+
+The workspace path must exist at the **same absolute location** for the service and the rootless daemon, and both sides must have the required permissions. Use cgroup v2 with the systemd cgroup driver so CPU, memory, and PID limits are actually enforced. Never give the service the host's rootful `/var/run/docker.sock`.
 
 ```bash
-openreview github-app-url --domain https://review.example.com --name "OpenReview MyTeam"
-# Add --org ORG when the organization will own it; add --public for cross-account installs.
+# Trusted image on the normal host daemon
+DOCKER_HOST=unix:///var/run/docker.sock \
+  docker build -t openreview-service:local .
+
+# Sandbox image and security test on the dedicated rootless daemon
+DOCKER_HOST=unix:///run/user/10001/docker.sock \
+  docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
+
+# Run the smoke test as the unprivileged rootless-daemon owner, not host root.
+DOCKER_HOST=unix:///run/user/10001/docker.sock \
+  SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces \
+  ./scripts/verify-rootless-sandbox.sh
+
+# Run the trusted service; Compose connects it only to the rootless socket.
+DOCKER_HOST=unix:///var/run/docker.sock docker compose up -d
+curl -f http://localhost:3000/health
 ```
 
-This command runs without any GitHub credentials or `.env`. It prints a URL to GitHub's own registration form, with permissions, webhook URL and events preselected. It cannot set the webhook secret or obtain a private key. If you prefer manual registration:
+These commands assume the rootless daemon/socket and shared workspace are already provisioned. **Do not accept untrusted jobs until the smoke test passes on the actual Docker host.** It exercises read-only Review mounts, writable Fix mounts, disabled networking, resource limits, credential absence, and teardown.
 
-1. Navigate to `https://github.com/settings/apps/new`.
-2. Configure your webhook URL: `https://YOUR_DOMAIN/api/webhooks/github`.
-3. Set permissions:
-   - **Repository permissions:**
-     - `Pull requests`: Read & write
-     - `Issues`: Read & write
-     - `Contents`: Read & write (required for Fix mode)
-     - `Metadata`: Read-only
-   - **Subscribe to events:**
-     - `Issue comment`
-     - `Pull request`
-     - `Pull request review comment`
-4. Generate a private key (`.pem`) and note your App ID and Webhook Secret.
-5. Choose "Only on this account" by default. Multi-organization operators can choose "Any account" explicitly, with an installation policy and LLM cost controls.
-6. Inspect `GET /api/manifest` as a reference template. It contains a placeholder webhook URL and does not implement GitHub's manifest-registration POST/redirect flow.
-7. Every self-hosted deployment must register and secure its **own** GitHub App and private key. Do not distribute one shared App private key to other operators. For production, the URL generator has unit coverage but GitHub's live registration form must still be verified by the deploying operator.
+### 3. Connect the webhook
 
----
+- Serve the app behind HTTPS, forwarding `https://review.example.com/api/webhooks/github` to the local service on `127.0.0.1:3000`.
+- In GitHub App settings, configure that webhook URL and the secret from `.env`. Grant repository **Contents, Issues, and Pull requests: read/write**; **Metadata: read**. Subscribe to `issue_comment`, `pull_request`, `pull_request_review_comment`, `installation`, and `installation_repositories`.
+- Install the App on a test repository, add the numeric installation ID to `ALLOWED_INSTALLATION_IDS`, restart Compose, and try `@YOUR_APP_HANDLE review` on a test PR.
+- Keep `/api/jobs`, `/api/jobs/{id}`, and `/metrics` off the public internet. The job API requires `Authorization: Bearer <JOB_API_TOKEN>`; expose operator-only endpoints through a separately authenticated channel.
 
-## Testing & Verification
+A minimal **host-side Caddy** reverse proxy example keeps operator paths private:
 
-Run the comprehensive automated test suite:
+```caddyfile
+review.example.com {
+    @operator path /api/jobs /api/jobs/* /metrics
+    respond @operator 403
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+A **Private** GitHub App can be installed only on its owning account. A cross-account operator needs **Public** app visibility **plus** explicit installation admission; public visibility never grants permission to consume your compute or model budget. The service stores job metadata and delivery IDs, but interrupted jobs are marked failed after a restart, not automatically replayed.
+
+## The engineering underneath
+
+```mermaid
+flowchart TD
+    GH["GitHub PR event"] --> Entry{"Deployment"}
+    Entry -->|Self-hosted App| Signed["Verify webhook signature & installation admission"]
+    Entry -->|GitHub Action| Action["Validate Actions event context"]
+    Signed --> Mode{"Requested mode"}
+    Action --> Mode
+    Mode -->|Review| RO["Read-only agent tools"]
+    Mode -->|Authorized Fix| RW["Isolated edit & test tools"]
+    RO --> Report["Evidence-aware PR response"]
+    RW --> Verify{"Tests actually executed and passed?"}
+    Verify -->|No / unknown| Report
+    Verify -->|Yes| Publish["Recheck rights, SHA & branch; non-force push"]
+    Publish --> Report
+```
+
+**How the layers divide responsibility:**
+
+| Layer | Where to look | Responsibility |
+| --- | --- | --- |
+| GitHub trust boundary | `src/github/`, `src/server/` | Signed webhooks, installation tokens, GitHub API, job/status endpoints |
+| Agent loop & tools | `src/agent/` | Model reasoning, tool routing, mode-specific capabilities |
+| Workflow policy | `src/workflow/` | Command parsing, permission gates, verification, publication |
+| Execution boundary | `src/sandbox/`, `Dockerfile.sandbox` | Ephemeral isolated workspace and resource restrictions |
+| AI providers | `src/llm/` | Provider adapters and model calls |
+| Skills | `src/skills/`, `skills/` | Loading supported skills and optional investigation packages |
+| Delivery | `action.yml`, `docker-compose.yml` | Per-repository Actions or self-hosted service |
+
+**The Fix path has multiple stopping points.** The requester must be authorized. The sandbox must meet isolation requirements. The tests must run and pass. The branch must still be the branch the agent inspected. The actor must still be authorized to publish. Protected branches must not be silently overwritten. If a check fails or its result is unavailable, publishing stops and the response should explain why.
+
+Test-output detection is deliberately conservative but **not tamper-proof**: repository code can fabricate runner output. Treat the built-in verification as a pre-publication check, not as a proof of test coverage, a substitute for trusted CI, or a security certification.
+
+### Run the CLI locally
+
 ```bash
+cargo build --locked --release
+
+# Load a configured local .env. Do not commit it.
+set -a
+. ./.env
+set +a
+
+./target/release/openreview verify-config
+./target/release/openreview review --repo owner/repo --pr 42 --dry-run
+```
+
+`--dry-run` suppresses remote comments and pushes. To run a real on-demand review, remove it after configuring GitHub access. The local sandbox driver is for **trusted development only**; it is not a secure boundary for hostile repositories and cannot publish Fix changes. For the webhook daemon, use `openreview serve --host 0.0.0.0 --port 3000` only with the required rootless Docker setup.
+
+### HTTP surface, in brief
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/webhooks/github` | GitHub events, authenticated by HMAC-SHA256 |
+| `GET /health` | Service health |
+| `GET /metrics` | Prometheus-format metrics; restrict access |
+| `GET /api/manifest` | Manual GitHub App registration reference, not an automated registration flow |
+| `GET /api/jobs` and `GET /api/jobs/{id}` | Operator-only job diagnostics with bearer-token authentication |
+| `GET /` | Service overview |
+
+## Deep Digger: the investigation workbench
+
+Some bugs resist a quick code scan because the failure crosses configuration, state, timing, dependencies, and assumptions. The repository also contains [**Deep Digger**](skills/deep-digger/README.md), a separate opt-in investigation skill with a structured case ledger, Python utilities, a Rust reproducer minimizer, evaluation scenarios, and an explicit evidence trail.
+
+It follows a different question: **What would disprove the explanation we're currently considering?**
+
+Deep Digger is **not automatically installed into every OpenReview run** merely because its source lives in this repository. To use it in a target repository, copy the complete `skills/deep-digger/` directory to `.agents/skills/deep-digger/` or `.skills/deep-digger/`, then follow its own README and `SKILL.md`. It helps structure investigations; it does **not** guarantee a unique root cause or discovery of unknown vulnerabilities.
+
+## Verify the project, not just the pitch
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Run static analysis and linter:
-```bash
-cargo clippy --all-targets -- -D warnings
-```
+The [CI workflow](.github/workflows/ci.yml) also covers container builds, rootless sandbox checks, dependency auditing, and the Deep Digger test suite. A green badge is useful evidence for those checks, **not a blanket statement about every production deployment or every PR the agent might touch**.
 
-Verify formatting:
-```bash
-cargo fmt --check
-```
+## What OpenReview does not promise
+
+- **Not an infallible reviewer.** Model findings require developer judgment, and a clean review does not prove the absence of bugs or zero-days.
+- **Not an unconditional auto-fixer.** Missing tools, offline dependencies, failed/absent tests, restricted branches, or an unsupported sandbox can block publication. The default sandbox image includes Cargo, npm, Go, and pytest; Bun needs an operator-supplied image.
+- **Not an inline-suggestion bot yet.** Findings and proposed suggestions are posted as Markdown comments, not native GitHub suggestion blocks.
+- **Not an approval-by-emoji workflow.** Fix starts from an explicit authorized command, not a reaction.
+- **Not a managed SaaS.** You provide the workflow/hosting, GitHub permissions, and AI credentials. Multi-installation admission is your responsibility when self-hosting.
+- **Not a claim of comprehensive test coverage.** The gate checks execution evidence; your own trusted CI and branch policies still matter.
+
+That restraint is intentional. **The most useful thing an engineering agent can say sometimes is: "I found a plausible repair, but I cannot prove it is safe to publish."**
+
+---
+
+### Build with me
+
+If you have a reproducible failure, a hostile-input test, a sandbox boundary to challenge, or a clearer way to explain verification, [open an issue](https://github.com/imMamdouhaboammar/openreview/issues) or [send a pull request](https://github.com/imMamdouhaboammar/openreview/pulls).
+
+I am interested in the cases that make an agent's confidence uncomfortable. Those are the cases that make the system better.
+
+<p align="center"><strong>OpenReview · Review with evidence. Fix with proof.</strong></p>
