@@ -246,8 +246,11 @@ A **Private** GitHub App can be installed only on its owning account. A cross-ac
 
 ```mermaid
 flowchart TD
-    GH["GitHub PR event"] --> Gate["Signature, installation & actor checks"]
-    Gate --> Mode{"Requested mode"}
+    GH["GitHub PR event"] --> Entry{"Deployment"}
+    Entry -->|Self-hosted App| Signed["Verify webhook signature & installation admission"]
+    Entry -->|GitHub Action| Action["Validate Actions event context"]
+    Signed --> Mode{"Requested mode"}
+    Action --> Mode
     Mode -->|Review| RO["Read-only agent tools"]
     Mode -->|Authorized Fix| RW["Isolated edit & test tools"]
     RO --> Report["Evidence-aware PR response"]
