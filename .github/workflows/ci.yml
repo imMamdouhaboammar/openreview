@@ -25,6 +25,24 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+  deep-digger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - name: Python CLI regression tests
+        run: python3 -m unittest discover -s skills/deep-digger/evals -p 'test_cli.py' -v
+      - name: Rust minimizer formatting
+        run: cargo fmt --manifest-path skills/deep-digger/rust/Cargo.toml --check
+      - name: Rust minimizer lint
+        run: cargo clippy --manifest-path skills/deep-digger/rust/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Rust minimizer regressions
+        run: cargo test --manifest-path skills/deep-digger/rust/Cargo.toml --all-targets --locked
+      - name: Agent skill security scan
+        run: python3 scripts/scan_skill_security.py skills/deep-digger
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

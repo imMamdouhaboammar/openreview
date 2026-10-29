@@ -41,7 +41,7 @@ When two hypotheses make the same prediction, do not run that experiment simply 
 
 Treat a mitigation (e.g., retry or scaling up) as a risk-reducing operational action, not evidence of why failure arose. If a patch is authorized, add a regression test that fails under the original mechanism, fix the implementation, and rerun adjacent tests and relevant checks without weakening assertions.
 
-The Skill must stop when: authorization does not cover the test; the only remaining experiment has unacceptable side effects; no stable oracle can be obtained with available access; competing hypotheses remain observationally indistinguishable; or the defined budget is exhausted. Preserve the strongest explanation, falsifiers, and explicit next prerequisite rather than declaring the task impossible or solved.
+The Skill must stop when: authorization does not cover the test; the only remaining experiment has unacceptable side effects; no usable oracle or bounded observation is obtainable with available access; competing hypotheses remain observationally indistinguishable; or the defined budget is exhausted. For flaky failures, bounded failure-rate comparisons can still supply exploratory evidence, but mixed outcomes cannot be treated as a stable binary oracle for `git bisect` or `ddmin`. Preserve the strongest explanation, falsifiers, and explicit next prerequisite rather than declaring the task impossible or solved.
 
 ## Final RCA structure
 

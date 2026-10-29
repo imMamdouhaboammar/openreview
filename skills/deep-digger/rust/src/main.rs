@@ -36,6 +36,9 @@ fn parse() -> Result<Config, String> {
             "--timeout" => {
                 let seconds: u64 = args.next().ok_or("--timeout value missing")?
                     .parse().map_err(|_| "invalid --timeout")?;
+                if !(1..=600).contains(&seconds) {
+                    return Err("--timeout must be between 1 and 600 seconds".into());
+                }
                 timeout = Duration::from_secs(seconds);
             }
             "--allow-exec" => allow_exec = true,
@@ -60,6 +63,13 @@ fn parse() -> Result<Config, String> {
             == output.canonicalize().unwrap_or(output.clone())
     {
         return Err("input must exist; output must be new and different".into());
+    }
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err("output parent directory must exist".into());
     }
     Ok(Config {
         input,
@@ -104,15 +114,38 @@ fn verdict(command: &[String], candidate: &Path, timeout: Duration) -> Verdict {
     }
 }
 
-fn run() -> Result<(), String> {
-    let config = parse()?;
-    let text = fs::read_to_string(&config.input).map_err(|x| x.to_string())?;
-    let lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+fn private_scratch_dir() -> Result<PathBuf, String> {
+    // Exclusive directory creation prevents symlink redirection in shared /tmp.
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|x| x.to_string())?
         .as_nanos();
-    let candidate = env::temp_dir().join(format!("deep-digger-{}-{}", std::process::id(), nanos));
+    for attempt in 0..16 {
+        let directory = env::temp_dir().join(format!(
+            "deep-digger-{}-{nanos}-{attempt}",
+            std::process::id()
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("could not create a unique private scratch directory".into())
+}
+
+fn run() -> Result<(), String> {
+    let config = parse()?;
+    let text = fs::read_to_string(&config.input).map_err(|x| x.to_string())?;
+    let lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    let scratch = private_scratch_dir()?;
+    let candidate = scratch.join("candidate.txt");
     let oracle = |chunks: &[String]| {
         let mut output = match fs::File::create(&candidate) {
             Ok(file) => file,
@@ -135,6 +168,7 @@ fn run() -> Result<(), String> {
     };
     let result = ddmin(&lines, config.max_tests, oracle);
     let _ = fs::remove_file(&candidate);
+    let _ = fs::remove_dir(&scratch);
     let result = result?;
     let mut output = OpenOptions::new()
         .create_new(true)
@@ -159,5 +193,23 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("Deep Digger Rust: {error}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_directory_is_private() {
+        let directory = private_scratch_dir().unwrap();
+        assert!(directory.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&directory).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        fs::remove_dir(directory).unwrap();
     }
 }

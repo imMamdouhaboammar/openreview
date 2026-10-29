@@ -23,6 +23,7 @@ from uuid import uuid4
 
 PHASES = ("baseline", "intervention", "reversal", "negative-control")
 VERDICTS = {0: "PASS", 1: "FAIL"}
+MAX_ORACLE_TIMEOUT = 600.0
 GATES = {
     "baseline": ("FAIL", 2),
     "intervention": ("PASS", 2),
@@ -132,7 +133,7 @@ def ddmin(chunks: Sequence[str], oracle: Callable[[list[str]], str], max_tests: 
     if not current:
         return current, True
     granularity = 2
-    while len(current) >= 2:
+    while current:
         unit_size = math.ceil(len(current) / granularity)
         reduced = False
         for start in range(0, len(current), unit_size):
@@ -170,8 +171,7 @@ def normalize_command(argv: list[str]) -> list[str]:
 
 
 def run_command(argv: list[str], timeout: float) -> dict:
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    validate_timeout(timeout)
     try:
         result = subprocess.run(argv, shell=False, timeout=timeout,
                                 capture_output=True, check=False)
@@ -182,6 +182,11 @@ def run_command(argv: list[str], timeout: float) -> dict:
                 "stderr_sha256": fingerprint(result.stderr)}
     except (OSError, subprocess.TimeoutExpired) as err:
         return {"verdict": "UNRESOLVED", "error_type": type(err).__name__}
+
+
+def validate_timeout(timeout: float) -> None:
+    if not math.isfinite(timeout) or not 0 < timeout <= MAX_ORACLE_TIMEOUT:
+        raise ValueError(f"timeout must be finite and between 0 and {MAX_ORACLE_TIMEOUT:g} seconds")
 
 
 def cmd_init(args) -> None:
@@ -225,6 +230,7 @@ def cmd_experiment(args) -> None:
         raise ValueError("execution requires --allow-exec and an isolated, user-approved command")
     if not 1 <= args.repeats <= 30:
         raise ValueError("repeats must be between 1 and 30")
+    validate_timeout(args.timeout)
     data = read_case(args.folder)
     require_hypothesis(data, args.hypothesis)
     argv = normalize_command(args.command)
@@ -312,11 +318,14 @@ def cmd_minimize(args) -> None:
         raise ValueError("repeats must be between 2 and 10 for a stability check")
     if args.max_tests <= 0:
         raise ValueError("max-tests must be positive")
+    validate_timeout(args.timeout)
     input_path, output_path = Path(args.input), Path(args.output)
     if input_path.resolve() == output_path.resolve():
         raise ValueError("output must not overwrite input")
     if not input_path.is_file() or output_path.exists():
         raise ValueError("input must be a file and output must not exist")
+    if not output_path.parent.is_dir():
+        raise ValueError("output directory must exist")
     argv = normalize_command(args.command)
     if not any("{input}" in item for item in argv):
         raise ValueError("command must include {input} placeholder")

@@ -19,7 +19,7 @@ Evidence records preserve SHA-256 of each supplied source file, not its content.
 
 ## Controlled repeated oracles
 
-Only after reviewing the exact command, its side effects and environment, explicitly opt in to execution. The executable and argv are passed as a list, never through a shell. The experimental program must exit with 0 for PASS, 1 for FAIL, and any other code for UNRESOLVED. These are **defined oracle semantics**, not general shell conventions. Timeouts and missing commands are UNRESOLVED. Avoid CLI arguments that contain secrets.
+Only after reviewing the exact command, its side effects and environment, explicitly opt in to execution. The executable and argv are passed as a list, never through a shell. The experimental program must exit with 0 for PASS, 1 for FAIL, and any other code for UNRESOLVED. These are **defined oracle semantics**, not general shell conventions. Timeouts and missing commands are UNRESOLVED. The timeout must be finite, positive, and at most 600 seconds per command. Avoid CLI arguments that contain secrets.
 
 ```bash
 python3 <skill-dir>/scripts/deep_digger.py experiment <case-dir> --hypothesis H-1 --phase baseline --repeats 3 --allow-exec -- python3 safe_reproducer.py

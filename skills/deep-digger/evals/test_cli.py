@@ -6,9 +6,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from deep_digger import main, ddmin, classify_case  # noqa: E402
+from deep_digger import main, ddmin, classify_case, run_command  # noqa: E402
 
 
 def invoke(*args):
@@ -93,6 +94,17 @@ class CliTests(unittest.TestCase):
         self.assertFalse(complete)
         self.assertLessEqual(len(output), len(chunks))
 
+    def test_single_line_reduces_to_empty_when_empty_still_fails(self):
+        output, complete = ddmin(["irrelevant\n"], lambda _: "FAIL", 20)
+        self.assertEqual([], output)
+        self.assertTrue(complete)
+
+    def test_nonfinite_timeout_is_rejected(self):
+        for value in (float("inf"), float("nan"), 601.0, 0.0):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    run_command([sys.executable, "-c", "pass"], value)
+
     def test_init_refuses_overwrite(self):
         self.assertNotEqual(0, invoke("init", str(self.case), "--title", "new", "--symptom", "new")[0])
         self.assertIn("Broken total", (self.case / "case.json").read_text())
@@ -118,6 +130,28 @@ class CliTests(unittest.TestCase):
         self.assertTrue(json.loads(out)["one_minimal_verified"])
         self.assertEqual("BUG\nTRIGGER\n", dest.read_text(encoding="utf-8"))
         self.assertIn("noise", source.read_text(encoding="utf-8"))
+
+    def test_minimize_recognizes_final_line_without_newline(self):
+        source = self.root / "without_newline.txt"
+        source.write_text("noise\nBUG\nTRIGGER", encoding="utf-8")
+        dest = self.root / "without_newline_out.txt"
+        oracle = Path(__file__).parent / "fixtures" / "trigger_oracle.py"
+        rc, out = invoke("minimize", "--input", str(source), "--output", str(dest),
+                         "--repeats", "2", "--allow-exec", "--", sys.executable, str(oracle), "{input}")
+        self.assertEqual(0, rc)
+        self.assertTrue(json.loads(out)["one_minimal_verified"])
+        self.assertEqual("BUG\nTRIGGER", dest.read_text(encoding="utf-8"))
+
+    def test_missing_output_parent_rejected_before_oracle_execution(self):
+        source = self.root / "failing.txt"
+        source.write_text("BUG\nTRIGGER\n", encoding="utf-8")
+        dest = self.root / "missing" / "result.txt"
+        oracle = Path(__file__).parent / "fixtures" / "trigger_oracle.py"
+        with mock.patch("deep_digger.run_command") as runner:
+            rc, _ = invoke("minimize", "--input", str(source), "--output", str(dest),
+                           "--repeats", "2", "--allow-exec", "--", sys.executable, str(oracle), "{input}")
+        self.assertEqual(2, rc)
+        runner.assert_not_called()
 
     def test_non_matching_oracle_refuses_minimize(self):
         source = self.root / "passing.txt"

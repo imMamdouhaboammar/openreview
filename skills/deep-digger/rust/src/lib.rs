@@ -37,7 +37,7 @@ where
     }
     let mut current = initial.to_vec();
     let mut granularity = 2usize;
-    while current.len() >= 2 {
+    while !current.is_empty() {
         let stride = current.len().div_ceil(granularity);
         let mut reduced = false;
         for start in (0..current.len()).step_by(stride) {
@@ -149,5 +149,12 @@ mod tests {
     fn empty_failing_input_can_be_minimal() {
         let result = ddmin(&[], 10, |_| Verdict::Fail).unwrap();
         assert!(result.complete);
+    }
+
+    #[test]
+    fn one_line_failing_input_can_reduce_to_empty() {
+        let result = ddmin(&["irrelevant\n".into()], 20, |_| Verdict::Fail).unwrap();
+        assert!(result.complete);
+        assert!(result.lines.is_empty());
     }
 }
