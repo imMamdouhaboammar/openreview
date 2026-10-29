@@ -33,8 +33,16 @@ fn missing_output_parent_fails_before_oracle_invocation() {
 fn excessive_timeout_fails_preflight() {
     let result = Command::new(env!("CARGO_BIN_EXE_deep-digger-min"))
         .args([
-            "--input", &fixture(), "--output", "unused-output", "--timeout", "601",
-            "--allow-exec", "--", "nonexistent-oracle", "{input}",
+            "--input",
+            &fixture(),
+            "--output",
+            "unused-output",
+            "--timeout",
+            "601",
+            "--allow-exec",
+            "--",
+            "nonexistent-oracle",
+            "{input}",
         ])
         .output()
         .unwrap();
