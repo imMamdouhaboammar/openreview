@@ -120,7 +120,12 @@ impl DockerSandbox {
                 .output(),
         )
         .await
-        .map_err(|_| AppError::Sandbox(format!("Docker command timed out after {limit:?}")))?
+        .map_err(|_| {
+            // Dropping the Docker CLI process does not stop its exec process.
+            // Destroy the sandbox container so timed-out code cannot keep running.
+            remove_container(&self.container_name);
+            AppError::Sandbox(format!("Docker command timed out after {limit:?}"))
+        })?
         .map_err(|e| AppError::Sandbox(format!("Docker exec failed: {e}")))?;
 
         Ok(CommandOutput {
