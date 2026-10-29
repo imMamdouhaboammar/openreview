@@ -1,0 +1,6 @@
+header
+noise
+BUG
+irrelevant payload
+TRIGGER
+footer
