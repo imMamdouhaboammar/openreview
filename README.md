@@ -166,13 +166,23 @@ MAX_CONCURRENT_JOBS=10
 
 2. Prepare a separate rootless Docker daemon, accessible by the service's unprivileged user (UID 10001). Its socket must be the path in `SANDBOX_DOCKER_SOCKET`. Do not supply a host-rootful `/var/run/docker.sock`. Create `SANDBOX_WORKSPACE_DIR` as an absolute directory visible at the **same absolute path** to both the Compose service and rootless Docker host. The service and sandbox's mapped rootless user must both have read/write permissions there. Rootless Docker needs **cgroup v2 with systemd cgroup driver** to enforce the configured memory, CPU and PID limits; startup and job admission reject unsupported configurations ([Docker's resource-limit documentation](https://docs.docker.com/engine/security/rootless/tips/#limiting-resources)). Startup probes this bind-mount boundary and refuses service if either side cannot write to the shared workspace.
 
-3. Build the execution image **on that rootless daemon**, then start the service:
+3. Use **two separate Docker daemons**. The rootful host daemon builds and runs the *trusted OpenReview service*, while the dedicated rootless daemon builds and runs *untrusted agent sandboxes*. Keep their sockets separate. In the example below, the host's rootful daemon is at `/var/run/docker.sock` and the isolated daemon belongs to UID 10001:
+
    ```bash
+   # Trusted service image and Compose must use the host's rootful daemon.
+   DOCKER_HOST=unix:///var/run/docker.sock docker build -t openreview-service:local .
+
+   # Untrusted execution image and smoke test must use the rootless daemon.
    DOCKER_HOST=unix:///run/user/10001/docker.sock docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
    DOCKER_HOST=unix:///run/user/10001/docker.sock SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces \
      ./scripts/verify-rootless-sandbox.sh
-   docker compose up -d
+
+   # Explicitly select the rootful daemon for Compose, even when the CLI's
+   # default context points to rootless Docker.
+   DOCKER_HOST=unix:///var/run/docker.sock docker compose up -d
    ```
+
+   The service container still connects **only** to the rootless daemon through `SANDBOX_DOCKER_SOCKET` mounted at `/run/openreview/docker.sock`; Compose sets its internal `DOCKER_HOST` to that socket. Never mount `/var/run/docker.sock` into the service container. If your trusted host daemon has a nonstandard socket, substitute its explicit socket path in the first and last commands. Ensure that the rootless socket and shared workspace can be accessed by the service's UID 10001, while the rootless daemon maps container UID 0 to its host owner UID 10001.
 
    Run the smoke test **as the same unprivileged user that owns the rootless Docker daemon** (UID 10001 in this example), not as host root. Its temporary workspace is mode 0700, and the container's user namespace must map to that owner to verify real read/write behavior.
 
