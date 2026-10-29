@@ -1,0 +1,9 @@
+interface:
+  display_name: Deep Digger
+  short_description: Evidence-driven investigation for stubborn failures
+  default_prompt: Use $deep-digger to investigate this difficult failure and test
+    competing root-cause hypotheses.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  allow_implicit_invocation: true
