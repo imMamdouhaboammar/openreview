@@ -31,6 +31,8 @@ pub struct GitRef {
 pub struct PullRequest {
     pub id: u64,
     pub number: u64,
+    #[serde(default)]
+    pub changed_files: Option<u64>,
     pub title: String,
     pub body: Option<String>,
     pub head: GitRef,
@@ -139,4 +141,45 @@ pub struct AppRestriction {
 pub struct PushAccessResult {
     pub can_push: bool,
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CollaboratorPermissionResponse {
+    pub permission: String,
+    #[serde(default)]
+    pub role_name: Option<String>,
+    pub user: User,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChangedFile {
+    pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub additions: usize,
+    #[serde(default)]
+    pub deletions: usize,
+    #[serde(default)]
+    pub changes: usize,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IssueCommentDetail {
+    pub id: u64,
+    pub body: String,
+    pub user: User,
+    pub html_url: String,
+    pub issue_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PullRequestReviewCommentDetail {
+    pub id: u64,
+    pub body: String,
+    pub user: User,
+    pub pull_request_url: String,
 }

@@ -1,4 +1,5 @@
 use crate::llm::types::ChatMessage;
+use crate::workflow::command::WorkflowMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -25,4 +26,18 @@ pub struct WorkflowParams {
     pub pr_branch: String,
     pub comment_id: Option<u64>,
     pub messages: Vec<ThreadMessage>,
+    pub installation_id: Option<u64>,
+    #[serde(default = "default_workflow_mode")]
+    pub mode: WorkflowMode,
+    #[serde(default)]
+    pub actor: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    pub head_sha: Option<String>,
+    #[serde(default)]
+    pub from_webhook: bool,
+}
+
+fn default_workflow_mode() -> WorkflowMode {
+    WorkflowMode::Review
 }

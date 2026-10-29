@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::jobs::JobManager;
 use crate::workflow::WorkflowCoordinator;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -9,6 +10,9 @@ pub struct Metrics {
     pub webhooks_received: AtomicUsize,
     pub reviews_completed: AtomicUsize,
     pub reviews_failed: AtomicUsize,
+    pub fixes_completed: AtomicUsize,
+    pub fixes_failed: AtomicUsize,
+    pub verification_failures: AtomicUsize,
     pub active_workflows: AtomicUsize,
 }
 
@@ -19,6 +23,9 @@ impl Metrics {
             webhooks_received: AtomicUsize::new(0),
             reviews_completed: AtomicUsize::new(0),
             reviews_failed: AtomicUsize::new(0),
+            fixes_completed: AtomicUsize::new(0),
+            fixes_failed: AtomicUsize::new(0),
+            verification_failures: AtomicUsize::new(0),
             active_workflows: AtomicUsize::new(0),
         }
     }
@@ -35,4 +42,5 @@ pub struct AppState {
     pub config: Config,
     pub coordinator: Arc<WorkflowCoordinator>,
     pub metrics: Arc<Metrics>,
+    pub jobs: Arc<JobManager>,
 }

@@ -1,25 +1,53 @@
 services:
   openreview:
-    build: .
+    # Reuse the image built for `github-app-url` during initial registration.
+    image: openreview-service:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openreview-service
     ports:
-      - "3000:3000"
+      # Public ingress must terminate HTTPS in a separate host reverse proxy.
+      - "127.0.0.1:3000:3000"
     environment:
       - HOST=0.0.0.0
       - PORT=3000
-      - BOT_USERNAME=openreview
+      - BOT_USERNAME=${BOT_USERNAME:-openreview}
       - GITHUB_APP_ID=${GITHUB_APP_ID}
       - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
       - GITHUB_APP_WEBHOOK_SECRET=${GITHUB_APP_WEBHOOK_SECRET}
-      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+      # GITHUB_APP_INSTALLATION_ID is optional and only used for standalone CLI fallback;
+      # multi-installation webhook ingestion extracts installation IDs dynamically.
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID:-}
+      - ALLOWED_INSTALLATION_IDS=${ALLOWED_INSTALLATION_IDS:-}
       - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
       - LLM_MODEL=${LLM_MODEL:-claude-3-7-sonnet-20250219}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SANDBOX_DRIVER=local
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - SANDBOX_DRIVER=${SANDBOX_DRIVER:-docker}
+      - JOB_API_TOKEN=${JOB_API_TOKEN:?set a unique JOB_API_TOKEN (at least 32 characters)}
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-10}
+      - DOCKER_HOST=unix:///run/openreview/docker.sock
+      - SANDBOX_WORKSPACE_DIR=${SANDBOX_WORKSPACE_DIR:?set a shared absolute host directory for job workspaces}
+    volumes:
+      - openreview_data:/data
+      # Mount only a separately administered rootless Docker daemon socket.
+      # Never mount /var/run/docker.sock from a rootful host daemon.
+      - ${SANDBOX_DOCKER_SOCKET:?set path to a dedicated rootless Docker socket}:/run/openreview/docker.sock
+      # The rootless daemon and service container must see identical absolute paths.
+      - ${SANDBOX_WORKSPACE_DIR:?set sandbox workspace path}:${SANDBOX_WORKSPACE_DIR:?set sandbox workspace path}
     restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 5s
+
+volumes:
+  openreview_data:
+    driver: local

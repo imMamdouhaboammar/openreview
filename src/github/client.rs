@@ -1,13 +1,13 @@
 use crate::error::{AppError, Result};
-use crate::github::types::{BranchProtection, PullRequest, PushAccessResult, Repository};
+use crate::github::types::{PullRequest, PushAccessResult, Repository};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::json;
-use tracing::{debug, warn};
+use tracing::warn;
 
-#[derive(Clone, Debug)]
+// Never derive Debug: the client contains a live GitHub installation token.
+#[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
-    token: String,
     base_url: String,
 }
 
@@ -32,7 +32,6 @@ impl GitHubClient {
 
         Ok(Self {
             client,
-            token,
             base_url: "https://api.github.com".to_string(),
         })
     }
@@ -41,10 +40,6 @@ impl GitHubClient {
         let mut client = Self::new(token)?;
         client.base_url = base_url;
         Ok(client)
-    }
-
-    pub fn token(&self) -> &str {
-        &self.token
     }
 
     pub async fn get_repository(&self, owner: &str, repo: &str) -> Result<Repository> {
@@ -96,7 +91,7 @@ impl GitHubClient {
         owner: &str,
         repo: &str,
         branch: &str,
-        app_slug: &str,
+        _app_slug: &str,
     ) -> Result<PushAccessResult> {
         let repo_data = self.get_repository(owner, repo).await?;
         if repo_data.archived {
@@ -106,37 +101,42 @@ impl GitHubClient {
             });
         }
 
-        // Check branch protection rules
-        let protection_url = format!(
-            "{}/repos/{owner}/{repo}/branches/{branch}/protection",
-            self.base_url
-        );
-        let protection_resp = self.client.get(&protection_url).send().await;
-
-        if let Ok(resp) = protection_resp {
-            let status = resp.status();
-            if status.is_success() {
-                if let Ok(protection) = resp.json::<BranchProtection>().await
-                    && let Some(restrictions) =
-                        protection.restrictions.filter(|r| !r.apps.is_empty())
-                {
-                    let allowed = restrictions.apps.iter().any(|app| {
-                        app.slug
-                            .as_deref()
-                            .map(|s| s.eq_ignore_ascii_case(app_slug))
-                            .unwrap_or(false)
-                    });
-                    if !allowed {
-                        return Ok(PushAccessResult {
-                            can_push: false,
-                            reason: Some(format!(
-                                "Branch \"{branch}\" has push restrictions that do not include the {app_slug} app"
-                            )),
-                        });
-                    }
-                }
-            } else if status.as_u16() != 404 && status.as_u16() != 403 {
-                debug!("Branch protection query returned status {status}");
+        // A GitHub App Contents-read token can read the branch's protected
+        // flag, which includes branch protection and rulesets. The separate
+        // /protection endpoint requires Administration-read and may return 403
+        // even for a correctly scoped installation token. Never treat that
+        // missing evidence as permission to publish.
+        let branch_url = format!("{}/repos/{owner}/{repo}/branches/{branch}", self.base_url);
+        let response = self
+            .client
+            .get(&branch_url)
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Branch protection check failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::GitHubApi(format!(
+                "Cannot verify protection for branch {branch} (HTTP {})",
+                response.status()
+            )));
+        }
+        let branch_metadata: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Invalid branch metadata: {e}")))?;
+        match branch_metadata["protected"].as_bool() {
+            Some(true) => {
+                return Ok(PushAccessResult {
+                    can_push: false,
+                    reason: Some(format!(
+                        "Branch \"{branch}\" is protected; autonomous Fix publishing is forbidden"
+                    )),
+                });
+            }
+            Some(false) => {}
+            None => {
+                return Err(AppError::GitHubApi(format!(
+                    "Cannot confirm protection status for branch {branch}"
+                )));
             }
         }
 
@@ -268,5 +268,224 @@ impl GitHubClient {
             )));
         }
         Ok(())
+    }
+
+    pub async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/repos/{owner}/{repo}/collaborators/{username}/permission",
+            self.base_url
+        );
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            AppError::GitHubApi(format!("Failed to query collaborator permission: {e}"))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "Collaborator permission query failed ({status}): {body}"
+            )));
+        }
+
+        let payload: crate::github::types::CollaboratorPermissionResponse =
+            resp.json().await.map_err(|e| {
+                AppError::GitHubApi(format!(
+                    "Failed to parse collaborator permission payload: {e}"
+                ))
+            })?;
+
+        Ok(payload.permission)
+    }
+
+    pub async fn get_pull_request_diff(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<String> {
+        let url = format!("{}/repos/{owner}/{repo}/pulls/{pr_number}", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .header(ACCEPT, "application/vnd.github.v3.diff")
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch PR diff: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "PR diff fetch failed ({status}): {text}"
+            )));
+        }
+
+        resp.text()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to read PR diff body: {e}")))
+    }
+
+    pub async fn get_pull_request_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<crate::github::types::ChangedFile>> {
+        let mut files = Vec::new();
+        for page in 1..=30 {
+            let url = format!(
+                "{}/repos/{owner}/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
+                self.base_url
+            );
+            let resp = self.client.get(&url).send().await.map_err(|e| {
+                AppError::GitHubApi(format!("Failed to fetch PR files page {page}: {e}"))
+            })?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::GitHubApi(format!(
+                    "PR files page {page} failed ({status}): {text}"
+                )));
+            }
+
+            let mut batch = resp
+                .json::<Vec<crate::github::types::ChangedFile>>()
+                .await
+                .map_err(|e| {
+                    AppError::GitHubApi(format!("Failed to parse PR files page {page}: {e}"))
+                })?;
+            let count = batch.len();
+            files.append(&mut batch);
+            if count < 100 {
+                return Ok(files);
+            }
+        }
+        Err(AppError::GitHubApi(
+            "PR file list may exceed GitHub's 3,000-file API limit; refusing incomplete context"
+                .into(),
+        ))
+    }
+
+    pub async fn get_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+    ) -> Result<crate::github::types::IssueCommentDetail> {
+        let url = format!(
+            "{}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            self.base_url
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to fetch issue comment: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHubApi(format!(
+                "Issue comment query failed ({status}): {text}"
+            )));
+        }
+
+        resp.json::<crate::github::types::IssueCommentDetail>()
+            .await
+            .map_err(|e| AppError::GitHubApi(format!("Failed to parse issue comment: {e}")))
+    }
+}
+
+pub fn is_permission_authorized_for_fix(permission: &str) -> bool {
+    matches!(
+        permission.to_lowercase().as_str(),
+        "admin" | "write" | "maintain"
+    )
+}
+
+pub fn extract_number_from_url(url: &str) -> Option<u64> {
+    url.rsplit('/').next()?.parse::<u64>().ok()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn branch_access_mock(
+        branch_status: &str,
+        branch_body: &str,
+    ) -> (GitHubClient, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let responses = [
+            (
+                "200 OK".to_owned(),
+                r#"{"id":1,"name":"repo","full_name":"owner/repo","owner":{"id":1,"login":"owner"}}"#.to_owned(),
+            ),
+            (branch_status.to_owned(), branch_body.to_owned()),
+        ];
+        let server = tokio::spawn(async move {
+            for (index, (status, body)) in responses.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                let path = if index == 0 {
+                    "/repos/owner/repo"
+                } else {
+                    "/repos/owner/repo/branches/feature"
+                };
+                assert!(
+                    request.starts_with(&format!("GET {path} HTTP/1.1")),
+                    "unexpected branch query: {request}"
+                );
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (
+            GitHubClient::with_base_url("test-token".into(), format!("http://{addr}")).unwrap(),
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn protected_branch_rejected_without_administration_permission() {
+        let (client, server) =
+            branch_access_mock("200 OK", r#"{"name":"feature","protected":true}"#).await;
+        let access = client
+            .check_push_access("owner", "repo", "feature", "openreview")
+            .await
+            .unwrap();
+        assert!(
+            !access.can_push,
+            "protected branches must reject autonomous Fix"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_branch_metadata_blocks_fix_publication() {
+        let (client, server) =
+            branch_access_mock("403 Forbidden", r#"{"message":"Resource not accessible"}"#).await;
+        assert!(
+            client
+                .check_push_access("owner", "repo", "feature", "openreview")
+                .await
+                .is_err(),
+            "incomplete branch authorization must fail closed"
+        );
+        server.await.unwrap();
     }
 }

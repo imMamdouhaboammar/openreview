@@ -1,0 +1,63 @@
+name: Rust and deployment checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --all
+      - name: Release build
+        run: cargo build --release
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install RustSec audit tool
+        run: cargo install cargo-audit --locked
+      - name: Scan locked dependencies
+        run: cargo audit
+
+  container-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build service image
+        run: docker build -f Dockerfile -t openreview-service:ci .
+      - name: Verify registration URL from the built container
+        run: |
+          registration_url=$(docker run --rm openreview-service:ci github-app-url --domain https://review.example.org --name "OpenReview CI")
+          case "$registration_url" in
+            https://github.com/settings/apps/new\?*webhook_url=https%3A%2F%2Freview.example.org%2Fapi%2Fwebhooks%2Fgithub*) ;;
+            *) echo "Container registration URL did not prefill the expected HTTPS webhook" >&2; exit 1 ;;
+          esac
+      - name: Build sandbox image
+        run: docker build -f Dockerfile.sandbox -t openreview-sandbox:latest .
+      - name: Validate Compose interpolation and structure
+        env:
+          JOB_API_TOKEN: ci-only-temporary-token-with-32-characters
+          SANDBOX_DOCKER_SOCKET: /tmp/ci-rootless-docker.sock
+          SANDBOX_WORKSPACE_DIR: /tmp/ci-openreview-workspaces
+          GITHUB_APP_ID: ci
+          GITHUB_APP_PRIVATE_KEY: ci-placeholder
+          GITHUB_APP_WEBHOOK_SECRET: ci-placeholder
+        run: docker compose config --quiet
+      - name: Validate rootless smoke-test script syntax
+        run: bash -n scripts/verify-rootless-sandbox.sh

@@ -35,6 +35,24 @@ pub enum AppError {
     #[error("Workflow error: {0}")]
     Workflow(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Path traversal detected: {0}")]
+    PathTraversal(String),
+
+    #[error("Verification failed: {0}")]
+    VerificationFailed(String),
+
+    #[error("Publishing forbidden in review mode")]
+    PublishingForbiddenInReviewMode,
+
+    #[error("Missing installation ID in webhook payload")]
+    MissingInstallationId,
+
+    #[error("Missing GitHub webhook delivery ID")]
+    MissingDeliveryId,
+
     #[error("Command execution failed ({exit_code}): {output}")]
     CommandFailed { exit_code: i32, output: String },
 
@@ -54,6 +72,12 @@ impl IntoResponse for AppError {
             AppError::Sandbox(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             AppError::Llm(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             AppError::Skill(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::Unauthorized(_) => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::PathTraversal(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::VerificationFailed(_) => (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()),
+            AppError::PublishingForbiddenInReviewMode => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::MissingInstallationId => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::MissingDeliveryId => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Workflow(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             AppError::CommandFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
