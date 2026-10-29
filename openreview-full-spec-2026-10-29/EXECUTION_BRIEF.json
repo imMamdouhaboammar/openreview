@@ -1,0 +1,106 @@
+{
+  "version": "1.0",
+  "title": "OpenReview Full Agentic Platform and Safe PR Merge",
+  "domain": "Rust, GitHub Apps and Actions, secure agentic coding",
+  "intent": {
+    "problem": "OpenReview has three stacked open PRs with green CI but outstanding production/security readiness, and its desired human/bot conversation, project playbook and advanced multi-file coding features need verified implementation.",
+    "desired_outcome": "Land the existing PR stack only when all security and deployment gates pass; ship Actions BYOK and self-hosted App; then deliver an interactive, project-aware multi-file coding agent, with independently implemented semantic review as a later milestone.",
+    "actor": "Mamdouh, repository owner, directing coding agents"
+  },
+  "status": "ready",
+  "scope": {
+    "in": [
+      "Revalidate PR #1, #2 and #3 and safely merge after blockers are resolved",
+      "BYOK provider and deployment paths for GitHub Actions and self-hosted GitHub App",
+      "PR context, comment/review/bot interaction and idempotent webhook routing",
+      "Project skill use with proof and typed playbook execution",
+      "Bounded multi-file review, Fix, test and trusted publisher",
+      "Independent semantic entity-level review research and gated implementation"
+    ],
+    "out": [
+      "Unconditional merge or force push",
+      "Auto-execution of arbitrary PR, bot or skill instructions with secrets",
+      "Production infrastructure managed by GitHub outside Actions",
+      "Claims of exhaustive vulnerability detection or unauthorized copying from Inspect"
+    ],
+    "constraints": [
+      "Respect current GitHub branch protection and approval requirements",
+      "TDD with reproducible red/green tests and current-SHA evidence",
+      "Fail closed on missing vulnerability details, tenant identity or publisher permissions",
+      "Preserve user-owned Codespace worktree edits",
+      "No credentials in repo, shell logs, PR comments, model prompts outside configured provider"
+    ]
+  },
+  "knowledge": {
+    "facts": [
+      "2026-10-29 snapshot: PR #1 is open non-draft, #2 and #3 are open draft; each is CLEAN and associated CI was green at recorded head SHA",
+      "Qlty status text reported open blockers: #1 five including three vulnerabilities, #2 four including one, #3 one; details have not been independently inspected",
+      "Live OpenCode Custom/Gemini Actions E2E in openreview-e2e-lab run 40809709032 was successful for one authorized Fix path",
+      "Rust source includes agent runner, PR diff snapshot, GitHub webhook verification, skills discovery, model adapters, sandbox, Actions and publisher",
+      "A prior PR description held merge pending verified multi-install App and rootless production host evidence",
+      "GitHub issue #4 captures independent semantic review inspiration"
+    ],
+    "assumptions": [
+      "Repository owner can arrange authorized test installations and select an App hosting operator",
+      "Existing Rust code and CI remain an appropriate baseline, subject to live revalidation",
+      "Real provider keys will be supplied by each user via standard secret configuration rather than embedded in this specification"
+    ],
+    "unknowns": [
+      "Current PR and CI state after the dated snapshot",
+      "Exact Qlty finding details and current branch protection settings",
+      "Actual multi-install App runtime evidence and available hosting infrastructure",
+      "Exact per-provider live key availability beyond the tested OpenCode route",
+      "Parser/library choice and measured value for semantic analysis"
+    ]
+  },
+  "decisions": [
+    { "decision": "One Rust core supports GitHub Actions BYOK and self-hosted GitHub App", "rationale": "Keep review/fix behavior consistent across hosting modes", "reversible": true },
+    { "decision": "Trusted publisher is separate from uncredentialed agent worker", "rationale": "Protect installation tokens and reduce prompt injection impact", "reversible": false },
+    { "decision": "PR comments, bots and repository skills are data, not authorization", "rationale": "Do not turn untrusted text into tool privileges", "reversible": false },
+    { "decision": "Semantic review concepts implemented independently", "rationale": "Respect the observed Inspect license and require independent evaluation", "reversible": true }
+  ],
+  "workstreams": [
+    { "name": "M0: PR blockers and safe merge", "outcome": "Reproducible App/security gates pass and stacked PRs land on main", "dependencies": [] },
+    { "name": "M1: Actions and App release", "outcome": "Tested deployment and four BYOK provider routes", "dependencies": ["M0"] },
+    { "name": "M2: PR conversations and bots", "outcome": "Complete causal context, verified mention routing and loop control", "dependencies": ["M1"] },
+    { "name": "M3: Skills and playbooks", "outcome": "Deterministic discovery and evidence-backed policy-restricted execution", "dependencies": ["M2"] },
+    { "name": "M4: Full coding agent", "outcome": "Bounded multi-file Fix with independent verification and safe publish", "dependencies": ["M3"] },
+    { "name": "M5: Operability and release", "outcome": "Resumable, observable and tested release", "dependencies": ["M4"] },
+    { "name": "M6: Semantic review", "outcome": "Independent symbol graph and measured risk review benefit", "dependencies": ["M5"] }
+  ],
+  "deliverables": [
+    "Verified merge and CI evidence per PR",
+    "GitHub Action BYOK install template and provider matrix",
+    "Self-hosted App deployment, lifecycle and security documentation",
+    "Conversation graph, skills/playbooks contracts and tests",
+    "Multi-file coding agent with bounded policy and trusted publication",
+    "E2E security matrix and independent semantic benchmark"
+  ],
+  "risks": [
+    "Unverified Qlty blockers and App E2E prevent safe merge",
+    "GitHub Actions fork/event secret handling may cause privilege leakage if designed incorrectly",
+    "External bot comments and repository skill text can be prompt-injection sources",
+    "GitHub token event semantics can leave a pushed commit without new CI",
+    "Semantic parsing can omit dynamic dependencies and inflate confidence"
+  ],
+  "verification": {
+    "success_criteria": [
+      "All M0 gates pass for exact current head SHAs before merge; main remains green",
+      "At least two independent App installations validated for isolation and revocation",
+      "Actions BYOK OpenCode live E2E plus fixture suite for OpenRouter, Anthropic, OpenAI",
+      "End-to-end threaded PR comment and bot loop tests pass",
+      "Skills/playbooks show observed application evidence and fail closed on privilege requests",
+      "Authorized multi-file Fix publishes only verified patch and reports checked SHA",
+      "Semantic findings show measured precision/recall and explicit parser coverage"
+    ],
+    "evidence": [
+      "GitHub PR/check URLs recorded in BASELINE_AND_EVIDENCE.md are past evidence only",
+      "Current merged SHA, CI run IDs and Qlty triage required at execution time",
+      "Test IDs and evidence ledger specified in TEST_AND_EVIDENCE_MATRIX.md"
+    ]
+  },
+  "blockers": [
+    "Obtain exact Qlty findings/approvals and two-install App safety evidence before any current merge"
+  ],
+  "next_action": "Start M0-01 as read-only discovery: re-query PR #1/#2/#3 heads, current CI and reviews; collect authorized Qlty findings and an App multi-install test environment."
+}

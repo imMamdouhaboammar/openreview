@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openreview:spec:v1:conversation-event",
+  "title": "OpenReview proposed ConversationEvent v1",
+  "description": "Design contract only. Untrusted GitHub text is never an authority source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "installation_id", "repository_id", "pr_number", "event_id", "event_kind", "actor_login", "actor_type", "created_at", "body", "head_sha_at_snapshot", "trust_level"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "installation_id": { "type": "integer", "minimum": 1 },
+    "repository_id": { "type": "integer", "minimum": 1 },
+    "pr_number": { "type": "integer", "minimum": 1 },
+    "event_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "delivery_id": { "type": ["string", "null"], "maxLength": 256 },
+    "event_kind": { "enum": ["issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request", "system_status"] },
+    "event_action": { "type": ["string", "null"], "maxLength": 128 },
+    "actor_login": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "actor_type": { "enum": ["User", "Bot", "Organization", "Unknown"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "body": { "type": "string", "maxLength": 500000 },
+    "parent_event_id": { "type": ["string", "null"], "maxLength": 256 },
+    "thread_id": { "type": ["string", "null"], "maxLength": 256 },
+    "path": { "type": ["string", "null"], "maxLength": 4096 },
+    "line": { "type": ["integer", "null"], "minimum": 1 },
+    "commit_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "head_sha_at_snapshot": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "trust_level": { "const": "untrusted_user_content" },
+    "permalink": { "type": ["string", "null"], "format": "uri" },
+    "context_truncated": { "type": "boolean", "default": false }
+  }
+}

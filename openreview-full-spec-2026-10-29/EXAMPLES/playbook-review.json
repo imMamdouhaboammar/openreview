@@ -1,0 +1,17 @@
+{
+  "version": "1",
+  "name": "pr-regression-review",
+  "description": "Proposed repository-controlled declarative checks. This file is NOT executable by the current OpenReview release.",
+  "scope": {
+    "modes": ["review", "suggest", "fix"],
+    "allowed_paths": ["src/", "tests/"],
+    "max_steps": 4
+  },
+  "preconditions": ["pr_context_complete", "head_sha_stable"],
+  "steps": [
+    { "id": "inspect-diff", "operation": "inspect", "description": "Read all changed production source hunks.", "requires": [], "evidence_required": true },
+    { "id": "locate-tests", "operation": "read", "description": "Find relevant regression tests without executing untrusted scripts in Review mode.", "requires": ["inspect-diff"], "evidence_required": true },
+    { "id": "assess", "operation": "review", "description": "Report validated findings anchored to a file and exact commit SHA.", "requires": ["locate-tests"], "evidence_required": true },
+    { "id": "recommend", "operation": "propose_patch", "description": "Prepare proposal only; no working tree modifications or push.", "requires": ["assess"], "evidence_required": true }
+  ]
+}

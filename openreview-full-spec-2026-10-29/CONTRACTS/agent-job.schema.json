@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openreview:spec:v1:agent-job",
+  "title": "OpenReview proposed AgentJob v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "installation_id", "repository_id", "pr_number", "head_sha", "mode", "state", "provider", "created_at", "budget", "authorized_actor"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "delivery_id": { "type": ["string", "null"], "maxLength": 256 },
+    "installation_id": { "type": "integer", "minimum": 1 },
+    "repository_id": { "type": "integer", "minimum": 1 },
+    "pr_number": { "type": "integer", "minimum": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "mode": { "enum": ["review", "suggest", "fix"] },
+    "state": { "enum": ["received", "rejected", "queued", "snapshotting", "planning", "executing", "verifying", "publishing", "completed", "failed", "stale", "needs_input", "canceled"] },
+    "authorized_actor": { "type": "string", "minLength": 1 },
+    "provider": { "enum": ["opencode", "openrouter", "anthropic", "openai", "gemini", "ollama"] },
+    "model": { "type": ["string", "null"], "maxLength": 256 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "max_tokens", "max_duration_seconds"],
+      "properties": {
+        "max_steps": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 10000000 },
+        "max_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+      }
+    },
+    "steps_completed": { "type": "integer", "minimum": 0, "default": 0 },
+    "context_complete": { "type": "boolean", "default": false },
+    "skill_digests": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
+    "verification_status": { "enum": ["not_run", "passed", "failed", "blocked"] },
+    "published_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "failure_code": { "type": ["string", "null"], "maxLength": 128 },
+    "evidence_refs": { "type": "array", "items": { "type": "string", "maxLength": 1024 } }
+  }
+}

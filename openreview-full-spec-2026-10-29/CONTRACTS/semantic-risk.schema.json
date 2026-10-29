@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openreview:spec:v1:semantic-risk",
+  "title": "OpenReview proposed SemanticImpact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "head_sha", "path", "language", "symbol_id", "change_kind", "start_line", "end_line", "parse_status", "candidate_risk"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "path": { "type": "string", "minLength": 1 },
+    "language": { "enum": ["rust", "javascript", "typescript", "python", "unsupported"] },
+    "symbol_id": { "type": "string", "minLength": 1 },
+    "change_kind": { "enum": ["added", "removed", "modified", "renamed", "unknown"] },
+    "start_line": { "type": "integer", "minimum": 1 },
+    "end_line": { "type": "integer", "minimum": 1 },
+    "parse_status": { "enum": ["complete", "partial", "failed", "unsupported"] },
+    "related_symbol_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "graph_depth": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "candidate_risk": { "type": "number", "minimum": 0, "maximum": 1 },
+    "feature_reasons": { "type": "array", "items": { "type": "string", "maxLength": 1024 } },
+    "coverage_note": { "type": ["string", "null"] }
+  }
+}

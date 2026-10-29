@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:openreview:spec:v1:skill-use",
+  "title": "OpenReview proposed SkillUseEvidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "source_path", "content_sha256", "selection_reason", "state", "steps"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "source_path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "source_trust": { "enum": ["repository_untrusted", "operator_managed", "built_in"] },
+    "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "selection_reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "state": { "enum": ["selected", "loaded", "attempted", "applied", "verified", "not_applicable", "failed"] },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_id", "status"],
+        "properties": {
+          "step_id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pending", "attempted", "applied", "verified", "blocked", "failed", "skipped"] },
+          "evidence_refs": { "type": "array", "items": { "type": "string", "maxLength": 1024 } },
+          "note": { "type": ["string", "null"], "maxLength": 2000 }
+        }
+      }
+    }
+  }
+}

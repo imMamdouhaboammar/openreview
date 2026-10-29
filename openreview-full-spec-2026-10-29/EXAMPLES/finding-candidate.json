@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "finding_id": "example-arithmetic-overflow",
+  "head_sha": "0000000000000000000000000000000000000000",
+  "path": "src/arithmetic.rs",
+  "title": "Check integer addition overflow handling",
+  "severity": "unknown",
+  "validation_state": "candidate",
+  "explanation": "Illustrative only. Needs code inspection and a reproducing test before a real severity claim.",
+  "source_spans": [{ "path": "src/arithmetic.rs", "start_line": 10, "end_line": 12 }],
+  "evidence_refs": [],
+  "related_thread_ids": [],
+  "risk_score": null,
+  "coverage_note": "Synthetic example; all-zero SHA is not a GitHub commit.",
+  "suggested_patch": null
+}
