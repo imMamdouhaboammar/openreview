@@ -210,6 +210,30 @@ impl WorkflowPublisher {
             });
         }
 
+        // Branch protection can change while the agent runs. Recheck it on the
+        // authenticated publishing path, after verification and head-SHA checks.
+        // The fourth argument is retained for the existing client API but is
+        // no longer used to infer authorization from inaccessible Admin APIs.
+        let access = gh
+            .check_push_access(owner, repo, &params.pr_branch, "")
+            .await?;
+        if !access.can_push {
+            return Err(AppError::Workflow(access.reason.unwrap_or_else(|| {
+                "Branch protection prevents autonomous Fix publishing".into()
+            })));
+        }
+
+        // Permission may be revoked while verification runs (up to ten minutes).
+        // Require fresh authorization immediately before the irreversible push.
+        let final_permission = gh
+            .get_collaborator_permission(owner, repo, &params.actor)
+            .await?;
+        if !crate::github::client::is_permission_authorized_for_fix(&final_permission) {
+            return Err(AppError::Unauthorized(
+                "Fix authorization was revoked before publishing".into(),
+            ));
+        }
+
         // 6. Safe Commit and Push
         let commit_msg = format!("openreview: automated fixes requested by @{}", params.actor);
         sandbox
@@ -307,6 +331,193 @@ mod tests {
         confirm_published_sha(&client, "owner", "repo", 7, "new-head")
             .await
             .unwrap();
+        server.await.unwrap();
+    }
+    struct ReadySandbox {
+        root: tempfile::TempDir,
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxInstance for ReadySandbox {
+        async fn run_command(
+            &self,
+            _: &str,
+            _: &[&str],
+        ) -> Result<crate::sandbox::traits::CommandOutput> {
+            Err(AppError::Sandbox("unexpected command".into()))
+        }
+
+        async fn run_bash(&self, _: &str) -> Result<crate::sandbox::traits::CommandOutput> {
+            Err(AppError::Sandbox("unexpected shell".into()))
+        }
+
+        async fn run_verification(
+            &self,
+            command: &str,
+        ) -> Result<crate::sandbox::traits::CommandOutput> {
+            assert_eq!(command, "cargo test");
+            Ok(crate::sandbox::traits::CommandOutput {
+                exit_code: 0,
+                stdout: "running 1 test\ntest result: ok. 1 passed; 0 failed".into(),
+                stderr: String::new(),
+            })
+        }
+
+        async fn read_file(&self, _: &str) -> Result<String> {
+            Err(AppError::Sandbox("unexpected read".into()))
+        }
+
+        async fn write_file(&self, _: &str, _: &str) -> Result<()> {
+            Err(AppError::Sandbox("unexpected write".into()))
+        }
+
+        async fn has_uncommitted_changes(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn commit_and_push(&self, _: &str, _: &str) -> Result<()> {
+            Err(AppError::Workflow("unsafe push reached".into()))
+        }
+
+        fn work_dir(&self) -> &std::path::Path {
+            self.root.path()
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_permission_after_verification_blocks_push() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Cargo.toml"), "[package]").unwrap();
+        let sandbox = ReadySandbox { root };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let repository =
+            r#"{"id":1,"name":"repo","full_name":"owner/repo","owner":{"id":1,"login":"owner"}}"#;
+        let pr = r#"{"id":7,"number":7,"title":"Fix","head":{"ref":"feature","sha":"initial","repo":{"id":1,"name":"repo","full_name":"owner/repo","owner":{"id":1,"login":"owner"}}},"base":{"ref":"main","sha":"base","repo":null},"html_url":"https://github.com/owner/repo/pull/7","user":{"id":2,"login":"alice"}}"#;
+        let permission_path = "/repos/owner/repo/collaborators/alice/permission";
+        let responses = [
+            (
+                permission_path,
+                r#"{"permission":"write","user":{"id":2,"login":"alice"}}"#,
+            ),
+            ("/repos/owner/repo/pulls/7", pr),
+            ("/repos/owner/repo", repository),
+            (
+                "/repos/owner/repo/branches/feature",
+                r#"{"name":"feature","protected":false}"#,
+            ),
+            (
+                permission_path,
+                r#"{"permission":"read","user":{"id":2,"login":"alice"}}"#,
+            ),
+        ];
+
+        let server = tokio::spawn(async move {
+            for (path, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(
+                    request.starts_with(&format!("GET {path} HTTP/1.1")),
+                    "unexpected request: {request}"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client =
+            GitHubClient::with_base_url("test-token".into(), format!("http://{addr}")).unwrap();
+        let params = WorkflowParams {
+            repo_full_name: "owner/repo".into(),
+            pr_number: 7,
+            base_branch: "main".into(),
+            pr_branch: "feature".into(),
+            comment_id: None,
+            installation_id: Some(42),
+            mode: WorkflowMode::Fix,
+            actor: "alice".into(),
+            dry_run: false,
+            head_sha: Some("initial".into()),
+            from_webhook: true,
+            messages: vec![],
+        };
+
+        let error = WorkflowPublisher::evaluate_and_publish(&sandbox, Some(&client), &params)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked"),
+            "authorization revocation was not enforced: {error}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn branch_protection_is_rechecked_after_verification_before_publishing() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Cargo.toml"), "[package]").unwrap();
+        let sandbox = ReadySandbox { root };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let repository =
+            r#"{"id":1,"name":"repo","full_name":"owner/repo","owner":{"id":1,"login":"owner"}}"#;
+        let pr = r#"{"id":7,"number":7,"title":"Fix","head":{"ref":"feature","sha":"initial","repo":{"id":1,"name":"repo","full_name":"owner/repo","owner":{"id":1,"login":"owner"}}},"base":{"ref":"main","sha":"base","repo":null},"html_url":"https://github.com/owner/repo/pull/7","user":{"id":2,"login":"alice"}}"#;
+        let responses = [
+            (
+                "/repos/owner/repo/collaborators/alice/permission",
+                r#"{"permission":"write","user":{"id":2,"login":"alice"}}"#,
+            ),
+            ("/repos/owner/repo/pulls/7", pr),
+            ("/repos/owner/repo", repository),
+            (
+                "/repos/owner/repo/branches/feature",
+                r#"{"name":"feature","protected":true}"#,
+            ),
+        ];
+        let server = tokio::spawn(async move {
+            for (path, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..bytes])
+                        .starts_with(&format!("GET {path} HTTP/1.1"))
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client =
+            GitHubClient::with_base_url("test-token".into(), format!("http://{addr}")).unwrap();
+        let params = WorkflowParams {
+            repo_full_name: "owner/repo".into(),
+            pr_number: 7,
+            base_branch: "main".into(),
+            pr_branch: "feature".into(),
+            comment_id: None,
+            installation_id: Some(42),
+            mode: WorkflowMode::Fix,
+            actor: "alice".into(),
+            dry_run: false,
+            head_sha: Some("initial".into()),
+            from_webhook: true,
+            messages: vec![],
+        };
+        let error = WorkflowPublisher::evaluate_and_publish(&sandbox, Some(&client), &params)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("protected"),
+            "publish reached an unsafe path: {error}"
+        );
         server.await.unwrap();
     }
 }
