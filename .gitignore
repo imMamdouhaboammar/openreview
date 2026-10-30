@@ -1,4 +1,6 @@
 /target
+dist/
+*.tgz
 **/*.rs.bk
 .env
 .env.local
