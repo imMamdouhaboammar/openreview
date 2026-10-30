@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -161,6 +162,100 @@ class CliTests(unittest.TestCase):
         self.assertEqual(2, invoke("minimize", "--input", str(source), "--output", str(dest),
                                     "--repeats", "2", "--allow-exec", "--", sys.executable, str(oracle), "{input}")[0])
         self.assertFalse(dest.exists())
+
+    def test_trace_ingestion_records_evidence(self):
+        _, out = invoke("hypothesis", str(self.case), "--claim", "downstream timeout", "--test", "inspect span")
+        hid = json.loads(out)["id"]
+        trace_file = self.root / "otel-trace.json"
+        trace_file.write_text(json.dumps({
+            "trace_id": "0x123",
+            "spans": [
+                {"name": "checkout_handler", "status": {"status_code": "ERROR", "description": "DatabasePoolTimeout"}},
+                {"name": "fetch_user", "status": {"status_code": "OK"}}
+            ]
+        }), encoding="utf-8")
+        rc, out = invoke("trace", str(self.case), "--hypothesis", hid, "--file", str(trace_file))
+        self.assertEqual(0, rc)
+        ev = json.loads(out)
+        self.assertEqual("observation", ev["kind"])
+        self.assertEqual("supports", ev["effect"])
+        self.assertEqual(1, ev["trace_metadata"]["failing_count"])
+        self.assertEqual(64, len(ev["sha256"]))
+
+    def test_causal_link_dag_and_cycle_prevention(self):
+        _, out1 = invoke("hypothesis", str(self.case), "--claim", "buffer leak", "--test", "leak test")
+        h1 = json.loads(out1)["id"]
+        _, out2 = invoke("hypothesis", str(self.case), "--claim", "oom crash", "--test", "check oom")
+        h2 = json.loads(out2)["id"]
+        rc, out = invoke("link", str(self.case), "--parent", h1, "--child", h2, "--relation", "causes")
+        self.assertEqual(0, rc)
+        link = json.loads(out)
+        self.assertEqual(h1, link["parent"])
+        self.assertEqual(h2, link["child"])
+        # Cycle attempt: h2 -> h1 must fail
+        rc_cycle, _ = invoke("link", str(self.case), "--parent", h2, "--child", h1, "--relation", "causes")
+        self.assertEqual(2, rc_cycle)
+
+    def test_flake_analysis_calculates_failure_rate(self):
+        _, out = invoke("hypothesis", str(self.case), "--claim", "timing race", "--test", "stress test")
+        hid = json.loads(out)["id"]
+        rc, out = invoke("flake", str(self.case), "--hypothesis", hid, "--repeats", "4", "--allow-exec",
+                         "--", sys.executable, "-c", "import sys; sys.exit(0)")
+        self.assertEqual(0, rc)
+        result = json.loads(out)
+        self.assertEqual(0.0, result["empirical_failure_rate"])
+        self.assertEqual("ZERO_FAILURE", result["classification"])
+
+    def test_repro_command_generates_template(self):
+        rc, out = invoke("repro", str(self.case), "--template", "python")
+        self.assertEqual(0, rc)
+        py_file = Path(json.loads(out)["reproducer"])
+        self.assertTrue(py_file.is_file())
+        self.assertIn("Broken total", py_file.read_text(encoding="utf-8"))
+
+        rc, out_bash = invoke("repro", str(self.case), "--template", "bash")
+        self.assertEqual(0, rc)
+        sh_file = Path(json.loads(out_bash)["reproducer"])
+        self.assertTrue(sh_file.is_file())
+        self.assertTrue(os.access(sh_file, os.X_OK))
+
+    def test_html_report_generation(self):
+        _, out = invoke("hypothesis", str(self.case), "--claim", "css collision", "--test", "inspect dom")
+        html_out = self.root / "dossier.html"
+        rc, out = invoke("report", str(self.case), "--html", str(html_out))
+        self.assertEqual(0, rc)
+        self.assertTrue(html_out.is_file())
+        content = html_out.read_text(encoding="utf-8")
+        self.assertIn("<!DOCTYPE html>", content)
+        self.assertIn("Deep Digger Diagnostic Dossier", content)
+        self.assertIn("Broken total", content)
+        self.assertIn("<svg", content)
+
+    def test_view_command_terminal_dashboard(self):
+        _, out = invoke("hypothesis", str(self.case), "--claim", "token desync", "--test", "skew clock")
+        rc, view_out = invoke("view", str(self.case), "--no-color")
+        self.assertEqual(0, rc)
+        self.assertIn("DEEP DIGGER · INCIDENT INVESTIGATION DOSSIER", view_out)
+        self.assertIn("INCIDENT OVERVIEW", view_out)
+        self.assertIn("HYPOTHESES & CONFIDENCE MATRIX", view_out)
+        self.assertIn("token desync", view_out)
+        self.assertIn("RECOMMENDED NEXT ACTION", view_out)
+
+    def test_token_granularity_minimization(self):
+        failing_input = self.root / "subline_bug.txt"
+        minimized_output = self.root / "subline_min.txt"
+        failing_input.write_text("alpha beta BUG gamma delta", encoding="utf-8")
+        oracle = (f"import sys; "
+                  f"content = open(sys.argv[1]).read(); "
+                  f"sys.exit(1 if 'BUG' in content else 0)")
+        rc, out = invoke("minimize", "--input", str(failing_input), "--output", str(minimized_output),
+                         "--granularity", "tokens", "--allow-exec",
+                         "--", sys.executable, "-c", oracle, "{input}")
+        self.assertEqual(0, rc)
+        result = json.loads(out)
+        self.assertEqual("tokens", result["granularity"])
+        self.assertTrue(result["one_minimal_verified"])
+        self.assertEqual("BUG", minimized_output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

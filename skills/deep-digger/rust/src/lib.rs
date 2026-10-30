@@ -1,4 +1,4 @@
-//! Dependency-free line-oriented delta debugging core.
+//! Dependency-free line and token oriented delta debugging core.
 //!
 //! This proves 1-minimality relative to a deterministic oracle, not a unique
 //! or ultimate causal explanation. Unresolved results cannot prove failure.
@@ -15,6 +15,41 @@ pub struct Minimization {
     pub lines: Vec<String>,
     pub tests: usize,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Granularity {
+    Lines,
+    Tokens,
+}
+
+/// Tokenize text into atomic lexical chunks (words, symbols, whitespace).
+/// Invariant: `tokenize(s).concat() == s`.
+pub fn tokenize(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut last_type = None; // 0 = whitespace, 1 = word/ident, 2 = punctuation
+
+    for ch in input.chars() {
+        let ch_type = if ch.is_whitespace() {
+            0
+        } else if ch.is_alphanumeric() || ch == '_' {
+            1
+        } else {
+            2
+        };
+
+        if last_type.is_some_and(|prev| (prev != ch_type || ch_type == 2) && !current.is_empty()) {
+            tokens.push(current);
+            current = String::new();
+        }
+        last_type = Some(ch_type);
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 pub fn ddmin<F>(initial: &[String], max_tests: usize, mut oracle: F) -> Result<Minimization, String>
@@ -156,5 +191,28 @@ mod tests {
         let result = ddmin(&["irrelevant\n".into()], 20, |_| Verdict::Fail).unwrap();
         assert!(result.complete);
         assert!(result.lines.is_empty());
+    }
+
+    #[test]
+    fn tokenize_roundtrips_and_preserves_content() {
+        let source = "fn main() {\n    let val = 42;\n    println!(\"{val}\");\n}\n";
+        let tokens = tokenize(source);
+        assert_eq!(tokens.concat(), source);
+    }
+
+    #[test]
+    fn token_level_ddmin_reduces_subline_syntax() {
+        let source = "alpha beta BUG gamma delta";
+        let tokens = tokenize(source);
+        let result = ddmin(&tokens, 100, |chunks| {
+            if chunks.iter().any(|x| x == "BUG") {
+                Verdict::Fail
+            } else {
+                Verdict::Pass
+            }
+        })
+        .unwrap();
+        assert!(result.complete);
+        assert_eq!(result.lines, vec!["BUG"]);
     }
 }

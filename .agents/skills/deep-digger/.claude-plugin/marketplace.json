@@ -1,0 +1,9 @@
+{
+  "name": "deep-digger",
+  "displayName": "Deep Digger",
+  "version": "1.0.0",
+  "description": "Catch that bug: Evidence-gated root cause investigation & controlled falsification for AI agents",
+  "author": {
+    "name": "Mamdouh Aboammar"
+  }
+}

@@ -1,0 +1,35 @@
+# Source code and development trees
+src/
+tests/
+target/
+.github/
+.agents/
+.claude/
+.gemini/
+.jspace/
+openreview-full-spec-*/
+replica/
+examples/
+docs/
+scripts/
+bin/
+skills/
+assets/
+failure-lessons/
+
+# Build and configuration files
+Cargo.toml
+Cargo.lock
+Dockerfile*
+docker-compose.yml
+action.yml
+.dockerignore
+.oxlintrc.json
+.env*
+*.log
+*.sh
+skills-lock.json
+
+# System files
+.DS_Store
+Thumbs.db

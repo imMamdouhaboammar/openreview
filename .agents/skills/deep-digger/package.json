@@ -1,0 +1,55 @@
+{
+  "name": "deep-digger",
+  "version": "1.1.0",
+  "description": "Catch that bug: Evidence-gated root cause investigation & controlled falsification for AI agents",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "deep-digger": "dist/cli.js",
+    "deep-digger-min": "dist/minimizer.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imMamdouhaboammar/deep-digger.git"
+  },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "marketplace.json",
+    ".skills.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build.js",
+    "prepare": "node ./scripts/build.js",
+    "prepublishOnly": "node ./scripts/build.js",
+    "start": "bun dist/cli.js",
+    "doctor": "bun dist/cli.js doctor",
+    "postinstall": "node ./dist/postinstall.js",
+    "test": "bun dist/cli.js doctor && python3 -m unittest discover -s evals -p 'test_cli.py' -v && cargo test --manifest-path rust/Cargo.toml"
+  },
+  "keywords": [
+    "agent-skill",
+    "debugging",
+    "root-cause-analysis",
+    "falsification",
+    "delta-debugging",
+    "skills.sh",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini",
+    "antigravity",
+    "bun"
+  ],
+  "author": "Mamdouh Aboammar <https://github.com/imMamdouhaboammar>",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

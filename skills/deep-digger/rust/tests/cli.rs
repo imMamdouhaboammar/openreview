@@ -49,3 +49,24 @@ fn excessive_timeout_fails_preflight() {
     assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("--timeout must be between"));
 }
+
+#[test]
+fn invalid_granularity_fails_preflight() {
+    let result = Command::new(env!("CARGO_BIN_EXE_deep-digger-min"))
+        .args([
+            "--input",
+            &fixture(),
+            "--output",
+            "unused-output",
+            "--granularity",
+            "invalid_mode",
+            "--allow-exec",
+            "--",
+            "nonexistent-oracle",
+            "{input}",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid --granularity"));
+}

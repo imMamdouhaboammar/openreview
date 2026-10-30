@@ -1,0 +1,48 @@
+{
+  "name": "openreview-ai",
+  "version": "0.1.0",
+  "description": "Evidence-gated AI code review bot, microservice, and causal investigation workbench",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "openreview": "dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imMamdouhaboammar/openreview.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build.js",
+    "prepare": "node ./scripts/build.js",
+    "prepublishOnly": "node ./scripts/build.js",
+    "start": "bun dist/cli.js",
+    "doctor": "bun dist/cli.js doctor",
+    "postinstall": "node ./dist/postinstall.js",
+    "test": "bun dist/cli.js doctor"
+  },
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "github-bot",
+    "ai-agent",
+    "rust",
+    "deep-digger",
+    "delta-debugging",
+    "agent-skill",
+    "bun"
+  ],
+  "author": "Mamdouh Aboammar <https://github.com/imMamdouhaboammar>",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
