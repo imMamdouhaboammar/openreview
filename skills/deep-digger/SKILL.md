@@ -1,11 +1,15 @@
 ---
 name: deep-digger
 description: Investigate stubborn, ambiguous, recurring, flaky, or cross-system technical failures with falsifiable root-cause hypotheses, controlled experiments, minimization, and traceable evidence. Use when a bug resists ordinary debugging, multiple plausible causes compete, incidents recur after fixes, or the user requests deep root-cause investigation. Do not use for an obvious one-line edit, speculative brainstorming without observable artifacts, or routine code review.
+license: MIT
+metadata:
+  author: Mamdouh Aboammar
+  repository: https://github.com/imMamdouhaboammar/deep-digger
 ---
 
 # Deep Digger
 
-> Investigate the failure until the strongest surviving causal explanation is supported by repeatable counterfactual evidence, or identify precisely why the cause remains unresolved.
+> **Catch That Bug**: Investigate the failure until the strongest surviving causal explanation is supported by repeatable counterfactual evidence, or identify precisely why the cause remains unresolved.
 
 ## Why This Skill Is Needed & Target State
 
@@ -33,7 +37,11 @@ The target state is an inspectable case packet with a reproducible failure signa
 ## Execution Workflows
 
 - [Investigate a deep failure](usecases/investigate.md): Evidence-gated autonomous investigation loop, experiment design, and outputs.
-- [Use deterministic tools](usecases/run-tools.md): Python case ledger, repeatable commands, delta debugging, optional Rust runner, and safety boundaries.
+- [Use deterministic tools](usecases/run-tools.md): Python case ledger, repeatable commands, delta debugging, trace analysis, causal DAG linking, flake estimation, and safety boundaries.
+- [J-Space Cognitive Architecture](references/jspace-investigation.md): Inner workspace reasoning, capacity limits, marker events, and calibrated confidence tags.
+- [Fault Localization & Architecture](references/recon-and-architecture.md): Reverse-engineered comparative analysis, mathematical foundations of delta minimization, and causal DAG formalism.
+- [Evidence-Gated RCA Pattern](docs/solutions/evidence-gated-root-cause-investigation.md): 4-phase causal quadruplet, cognitive bounds, and tamper-evident ledger integrity.
+- [Delta Debugging Invariants](docs/solutions/delta-debugging-invariants.md): Mathematical foundations, 1-minimality proofs, token vs line granularity, and statistical flake oracles.
 
 ### Dispatch by observed failure class
 
@@ -84,3 +92,9 @@ Automated `experimental-pattern` in the Python report means *experiment-pattern 
 Nine semantic scenario families (including a near-negative, production-risk case, false certainty pressure, contradictory evidence, and prompt injection) live in `evals/scenarios.json`. They are **proposed agent-behavior cases**, not proof of a behavioral evaluation run. `evals/test_cli.py` and Rust unit tests exercise deterministic mechanics only.
 
 Return a case packet containing: target and reproduction signature; environment/time window; candidate cause graph; observations with evidence IDs and hashes; experiment predictions, exact verdicts and controls; ruled-out alternatives; mechanism; any edits and fresh tests; unresolved contradictions; permission blockers; and the next smallest discriminating test. Never report `root cause found` when the evidence only supports a plausible explanation.
+
+## Attribution & Provenance
+
+- **Author**: [Mamdouh Aboammar](https://github.com/imMamdouhaboammar)
+- **Repository**: https://github.com/imMamdouhaboammar/deep-digger
+- **Pattern**: [Omni Skill Architecture](https://github.com/imMamdouhaboammar/omni-skill)

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-plugin-manifest.json",
+  "name": "deep-digger",
+  "displayName": "Deep Digger",
+  "version": "1.1.0",
+  "description": "Catch that bug: Evidence-gated root cause investigation & controlled falsification for AI agents",
+  "author": {
+    "name": "Mamdouh Aboammar",
+    "url": "https://github.com/imMamdouhaboammar"
+  },
+  "homepage": "https://skills.sh/deep-digger",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imMamdouhaboammar/deep-digger.git"
+  },
+  "license": "MIT",
+  "categories": [
+    "debugging",
+    "developer-tools",
+    "automation",
+    "agent-tools"
+  ],
+  "compatibility": {
+    "claudeCode": ">=1.0.0",
+    "claudeDesktop": ">=1.0.0",
+    "cursor": ">=0.40.0",
+    "codex": ">=0.1.0",
+    "opencode": ">=1.0.0",
+    "antigravity": ">=1.0.0"
+  },
+  "entrypoint": "SKILL.md",
+  "bin": {
+    "deep-digger": "./bin/cli.js"
+  }
+}

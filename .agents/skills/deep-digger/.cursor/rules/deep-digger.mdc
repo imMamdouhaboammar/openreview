@@ -1,0 +1,26 @@
+---
+description: Deep Digger root-cause investigation, controlled falsification, and delta debugging
+globs: *
+alwaysApply: false
+---
+
+# Deep Digger | Catch That Bug
+
+When investigating stubborn, flaky, intermittent, or high-impact failures:
+- Never confuse symptom with root cause.
+- Maintain competing causal hypotheses.
+- Use discriminating experiments before patching.
+- Validate causal fixes via baseline reproduction, intervention, reversal, and negative control (A/B/A/C).
+
+## CLI Quickstart
+```bash
+# Initialize case ledger
+deep-digger init cases/incident-01
+
+# Add competing hypotheses
+deep-digger hypothesis cases/incident-01 add H1 "Race condition in cache eviction"
+deep-digger hypothesis cases/incident-01 add H2 "Stale DNS TTL resolution"
+
+# Generate evaluation report
+deep-digger report cases/incident-01 --format text
+```

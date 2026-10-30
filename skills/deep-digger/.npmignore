@@ -1,0 +1,13 @@
+evals/
+cases/
+rust/target/
+rust/tests/
+.github/
+.cursor/
+.claude-plugin/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.venv/
+*.log

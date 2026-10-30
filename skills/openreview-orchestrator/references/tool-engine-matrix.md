@@ -9,7 +9,8 @@ Comprehensive reference of all binaries, CLI commands, scripts, and environment 
 | Binary | Source Path | Key Subcommands & Flags | Purpose |
 | :--- | :--- | :--- | :--- |
 | `openreview` | `src/main.rs` | `review`, `serve`, `action`, `verify-config`, `github-app-url`, `test-webhook` | Primary review daemon and CLI review runner |
-| `deep-digger-min` | `skills/deep-digger/rust/src/main.rs` | `--input <FILE> --output <FILE> --allow-exec [--repeats N] [--timeout SEC] -- <ORACLE> {input}` | High-speed Rust input minimizer (`ddmin`) |
+| `deep-digger` | `skills/deep-digger/bin/cli.js` | `init`, `hypothesis`, `evidence`, `experiment`, `trace`, `link`, `flake`, `bisect`, `repro`, `minimize`, `report`, `view`, `doctor` | Unified investigation CLI (standalone npm or OpenReview skill) |
+| `deep-digger-min` | `skills/deep-digger/rust/src/main.rs` | `--input <FILE> --output <FILE> --allow-exec [--granularity lines\|tokens] [--repeats N] [--timeout SEC] -- <ORACLE> {input}` | High-speed Rust input minimizer (`ddmin`) |
 
 ---
 
@@ -52,5 +53,6 @@ Comprehensive reference of all binaries, CLI commands, scripts, and environment 
 - `scripts/orchestrate.py`: Intent classifier, DAG route evaluator, and execution supervisor.
 - `scripts/format_review.py`: Validates and formats findings according to `agency-code-reviewer` and `suggestion` specs.
 - `skills/openreview/scripts/verify_openreview.py`: Validates repository configuration against the 6 core invariants.
-- `skills/deep-digger/scripts/deep_digger.py`: CLI for hypothesis and evidence management.
+- `skills/deep-digger/scripts/deep_digger.py`: CLI for hypothesis and evidence management, trace ingestion, DAG linking, flake analysis, automated git bisect, and HTML reporting.
+- `skills/deep-digger/scripts/build.js`: Clean packaging script for npm distribution bundle (`dist/`).
 - `scripts/scan_skill_security.py`: NVIDIA/SkillSpector-aligned static security analyzer.

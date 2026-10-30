@@ -1,0 +1,17 @@
+{
+  "$schema": "https://skills.sh/schema.json",
+  "name": "deep-digger",
+  "version": "1.1.0",
+  "description": "Catch that bug: Evidence-gated root cause investigation & controlled falsification for AI agents",
+  "repository": "https://github.com/imMamdouhaboammar/deep-digger",
+  "author": "Mamdouh Aboammar",
+  "license": "MIT",
+  "skill": "SKILL.md",
+  "tags": [
+    "agent-skill",
+    "debugging",
+    "root-cause-analysis",
+    "falsification",
+    "delta-debugging"
+  ]
+}

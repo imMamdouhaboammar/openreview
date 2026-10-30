@@ -1,5 +1,5 @@
 //! Standalone Rust oracle runner; commands require explicit execution opt-in.
-use deep_digger_min::{Verdict, ddmin};
+use deep_digger_min::{Granularity, Verdict, ddmin, tokenize};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -13,6 +13,7 @@ struct Config {
     max_tests: usize,
     repeats: usize,
     timeout: Duration,
+    granularity: Granularity,
     command: Vec<String>,
 }
 
@@ -23,6 +24,7 @@ fn parse() -> Result<Config, String> {
     let mut repeats = 3;
     let mut timeout = Duration::from_secs(15);
     let mut allow_exec = false;
+    let mut granularity = Granularity::Lines;
     let mut command = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(item) = args.next() {
@@ -33,6 +35,14 @@ fn parse() -> Result<Config, String> {
                 .parse().map_err(|_| "invalid --max-tests")?,
             "--repeats" => repeats = args.next().ok_or("--repeats value missing")?
                 .parse().map_err(|_| "invalid --repeats")?,
+            "--granularity" => {
+                let mode = args.next().ok_or("--granularity value missing")?;
+                granularity = match mode.as_str() {
+                    "lines" => Granularity::Lines,
+                    "tokens" => Granularity::Tokens,
+                    _ => return Err("invalid --granularity: choose 'lines' or 'tokens'".into()),
+                };
+            }
             "--timeout" => {
                 let seconds: u64 = args.next().ok_or("--timeout value missing")?
                     .parse().map_err(|_| "invalid --timeout")?;
@@ -46,7 +56,7 @@ fn parse() -> Result<Config, String> {
                 command = args.collect();
                 break;
             }
-            "--help" => return Err("usage: deep-digger-min --input FILE --output NEWFILE --allow-exec [--repeats 3] [--max-tests 200] [--timeout SECONDS] -- oracle {input}".into()),
+            "--help" => return Err("usage: deep-digger-min --input FILE --output NEWFILE --allow-exec [--granularity lines|tokens] [--repeats 3] [--max-tests 200] [--timeout SECONDS] -- oracle {input}".into()),
             _ => return Err(format!("unknown argument: {item}")),
         }
     }
@@ -77,6 +87,7 @@ fn parse() -> Result<Config, String> {
         max_tests,
         repeats,
         timeout,
+        granularity,
         command,
     })
 }
@@ -143,7 +154,10 @@ fn private_scratch_dir() -> Result<PathBuf, String> {
 fn run() -> Result<(), String> {
     let config = parse()?;
     let text = fs::read_to_string(&config.input).map_err(|x| x.to_string())?;
-    let lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    let chunks: Vec<String> = match config.granularity {
+        Granularity::Tokens => tokenize(&text),
+        Granularity::Lines => text.split_inclusive('\n').map(str::to_owned).collect(),
+    };
     let scratch = private_scratch_dir()?;
     let candidate = scratch.join("candidate.txt");
     let oracle = |chunks: &[String]| {
@@ -166,7 +180,7 @@ fn run() -> Result<(), String> {
             Verdict::Unresolved
         }
     };
-    let result = ddmin(&lines, config.max_tests, oracle);
+    let result = ddmin(&chunks, config.max_tests, oracle);
     let _ = fs::remove_file(&candidate);
     let _ = fs::remove_dir(&scratch);
     let result = result?;
@@ -175,16 +189,17 @@ fn run() -> Result<(), String> {
         .write(true)
         .open(&config.output)
         .map_err(|x| x.to_string())?;
-    for line in &result.lines {
+    for chunk in &result.lines {
         output
-            .write_all(line.as_bytes())
+            .write_all(chunk.as_bytes())
             .map_err(|x| x.to_string())?;
     }
     println!(
-        "retained_lines={} tests={} one_minimal_verified={}",
+        "retained_units={} tests={} one_minimal_verified={} granularity={:?}",
         result.lines.len(),
         result.tests,
-        result.complete
+        result.complete,
+        config.granularity
     );
     Ok(())
 }

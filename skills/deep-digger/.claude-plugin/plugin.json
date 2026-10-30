@@ -1,0 +1,8 @@
+{
+  "name": "deep-digger",
+  "version": "1.0.0",
+  "description": "Deep Digger: Catch That Bug with evidence-gated root cause investigation & controlled falsification",
+  "author": {
+    "name": "Mamdouh Aboammar"
+  }
+}

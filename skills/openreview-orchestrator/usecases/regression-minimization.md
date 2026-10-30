@@ -24,13 +24,22 @@ Workflow for isolating subtle regressions and delta-debugging reproducing inputs
    ```
 
 2. **Execute Delta Minimization:**
-   Run the high-speed Rust `ddmin` minimizer:
+   Run the high-speed Rust `ddmin` minimizer (line-level or token-level):
    ```bash
+   # Line-level reduction:
    deep-digger-min \
      --input ./test_cases/large_failing_payload.json \
      --output ./test_cases/minimal_failing_payload.json \
      --allow-exec \
      --repeats 3 \
+     -- ./oracle.sh {input}
+
+   # Token-level reduction (for sub-line syntax or JSON payloads):
+   deep-digger-min \
+     --input ./test_cases/syntax_bug.txt \
+     --output ./test_cases/syntax_minimal.txt \
+     --granularity tokens \
+     --allow-exec \
      -- ./oracle.sh {input}
    ```
 

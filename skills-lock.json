@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "deep-digger": {
+      "source": "imMamdouhaboammar/deep-digger",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "defc5fe395148b7a2a7e5c08ebe954bfa8f6e82d0714a57ec5026238fc2bf001"
+    }
+  }
+}

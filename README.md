@@ -305,11 +305,15 @@ set +a
 
 ## Deep Digger: the investigation workbench
 
-Some bugs resist a quick code scan because the failure crosses configuration, state, timing, dependencies, and assumptions. The repository also contains [**Deep Digger**](skills/deep-digger/README.md), a separate opt-in investigation skill with a structured case ledger, Python utilities, a Rust reproducer minimizer, evaluation scenarios, and an explicit evidence trail.
+Some bugs resist a quick code scan because the failure crosses configuration, state, timing, dependencies, and assumptions. The repository contains [**Deep Digger**](skills/deep-digger/README.md), an evidence-gated causal investigation engine and root-cause minimizer.
+
+Deep Digger operates seamlessly in **two complementary styles**:
+1. **Standalone Skill & NPM Package:** Available as an independent, zero-dependency package (`npm install -g deep-digger` or `bun add -g deep-digger`) and registered in universal agent registries via `npx skills add imMamdouhaboammar/deep-digger`. It provides a dedicated CLI (`deep-digger`), preflight doctor diagnostics, and standalone test harness generation.
+2. **Native OpenReview Investigation Workbench:** Embedded directly under `skills/deep-digger/` as OpenReview's causal debugging subsystem. When `openreview-orchestrator` detects test regressions, non-deterministic flakes, or oversized crash payloads, it transitions to `INVESTIGATE` mode, employing Deep Digger's trace ingestion, causal DAG modeling, statistical flake estimation ($P(\text{FAIL})$), Rust-accelerated delta debugging (`deep-digger-min` with `--granularity tokens|lines`), and air-gapped HTML diagnostic dossiers.
 
 It follows a different question: **What would disprove the explanation we're currently considering?**
 
-Deep Digger is **not automatically installed into every OpenReview run** merely because its source lives in this repository. To use it in a target repository, copy the complete `skills/deep-digger/` directory to `.agents/skills/deep-digger/` or `.skills/deep-digger/`, then follow its own README and `SKILL.md`. It helps structure investigations; it does **not** guarantee a unique root cause or discovery of unknown vulnerabilities.
+Deep Digger is **not automatically installed into every OpenReview run** merely because its source lives in this repository. To use it in a target repository, install it via `npx skills add imMamdouhaboammar/deep-digger`, npm, or copy `skills/deep-digger/` to `.agents/skills/deep-digger/`, then follow its own README and `SKILL.md`. It helps structure investigations; it does **not** guarantee a unique root cause or discovery of unknown vulnerabilities.
 
 ## Verify the project, not just the pitch
 
