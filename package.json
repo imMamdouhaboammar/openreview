@@ -1,6 +1,6 @@
 {
   "name": "openreview-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Evidence-gated AI code review bot, microservice, and causal investigation workbench",
   "type": "module",
   "main": "dist/cli.js",
