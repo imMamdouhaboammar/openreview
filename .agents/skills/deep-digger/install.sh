@@ -7,37 +7,37 @@ TARGET_NAME="deep-digger"
 
 echo "[Deep Digger] Installing ${TARGET_NAME} (Catch That Bug)..."
 
+install_to() {
+  local target_dir="$1"
+  local dest="${target_dir}/${TARGET_NAME}"
+  if [ "$SCRIPT_DIR" = "$dest" ]; then
+    echo "  [OK] Already in place -> $dest"
+    return 0
+  fi
+  mkdir -p "$target_dir"
+  rm -rf "$dest"
+  cp -r "$SCRIPT_DIR" "$dest"
+  echo "  [OK] Installed -> $dest"
+}
+
 # Claude Code
 if [ -d "$HOME/.claude" ] || command -v claude >/dev/null 2>&1; then
-  mkdir -p "$HOME/.claude/skills"
-  rm -rf "$HOME/.claude/skills/${TARGET_NAME}"
-  cp -r "$SCRIPT_DIR" "$HOME/.claude/skills/${TARGET_NAME}"
-  echo "  [OK] Installed for Claude Code -> $HOME/.claude/skills/${TARGET_NAME}"
+  install_to "$HOME/.claude/skills"
 fi
 
 # Antigravity / Gemini CLI
 GEMINI_HOME="${HOME}/.gemini"
 if [ -d "${GEMINI_HOME}" ]; then
-  DEST_DIR="${GEMINI_HOME}/config/skills"
-  mkdir -p "${DEST_DIR}"
-  rm -rf "${DEST_DIR}/${TARGET_NAME}"
-  cp -r "$SCRIPT_DIR" "${DEST_DIR}/${TARGET_NAME}"
-  echo "  [OK] Installed for Antigravity / Gemini CLI -> ${DEST_DIR}/${TARGET_NAME}"
+  install_to "${GEMINI_HOME}/config/skills"
 fi
 
 # Codex / OpenCode
 if [ -d "$HOME/.codex" ]; then
-  mkdir -p "$HOME/.codex/skills"
-  rm -rf "$HOME/.codex/skills/${TARGET_NAME}"
-  cp -r "$SCRIPT_DIR" "$HOME/.codex/skills/${TARGET_NAME}"
-  echo "  [OK] Installed for Codex / OpenCode -> $HOME/.codex/skills/${TARGET_NAME}"
+  install_to "$HOME/.codex/skills"
 fi
 
 # Universal Agent Kernel (~/.agents/skills)
-mkdir -p "$HOME/.agents/skills"
-rm -rf "$HOME/.agents/skills/${TARGET_NAME}"
-cp -r "$SCRIPT_DIR" "$HOME/.agents/skills/${TARGET_NAME}"
-echo "  [OK] Installed for Universal Agent Kernel -> $HOME/.agents/skills/${TARGET_NAME}"
+install_to "$HOME/.agents/skills"
 
 # Optional local user bin symlink
 if [ -d "$HOME/.local/bin" ]; then

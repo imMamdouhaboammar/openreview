@@ -44,7 +44,7 @@ Workflow for isolating subtle regressions and delta-debugging reproducing inputs
    ```
 
 3. **Verify Minimality:**
-   Confirm that the resulting file is 1-minimal (removing any line causes the oracle to exit 0).
+   Confirm that the resulting file is 1-minimal at the selected granularity (checking that `one_minimal_verified` is true in the tool output, meaning removing any single retained line or token causes the failure to disappear).
 
 4. **Handoff to Fix Engine:**
    Use the minimized reproducer as the regression test in OpenReview's Fix workflow.

@@ -20,6 +20,10 @@ mkdirSync(distDir, { recursive: true });
 // 2. Copy CLI and postinstall scripts to dist
 cpSync(join(rootDir, 'bin', 'cli.js'), join(distDir, 'cli.js'));
 cpSync(join(rootDir, 'bin', 'postinstall.js'), join(distDir, 'postinstall.js'));
+if (existsSync(join(rootDir, 'bin', 'minimizer.js'))) {
+  cpSync(join(rootDir, 'bin', 'minimizer.js'), join(distDir, 'minimizer.js'));
+  chmodSync(join(distDir, 'minimizer.js'), 0o755);
+}
 chmodSync(join(distDir, 'cli.js'), 0o755);
 chmodSync(join(distDir, 'postinstall.js'), 0o755);
 

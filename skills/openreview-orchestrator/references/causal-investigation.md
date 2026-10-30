@@ -80,7 +80,7 @@ Step 7: Render Dashboard or Export Incident Dossier
         deep-digger report <case-dir> --html <case-dir>/incident_dossier.html
 
 Step 8: Handoff to Fix Pipeline
-        Pass the 1-minimal test case and verified causal mechanism into OpenReview Fix mode as the regression gate.
+        When one_minimal_verified is true, pass the verified 1-minimal test case and causal mechanism into OpenReview Fix mode as the regression gate. If verification was incomplete, treat it strictly as the best-known reduction.
 ```
 
 ---
@@ -91,4 +91,4 @@ The Rust minimizer (`deep-digger-min`) implements Zeller's delta debugging (`ddm
 - Splitting inputs into recursive granular chunks (lines or atomic lexical tokens).
 - Testing single chunk removal and complement subsets.
 - Verifying stability across repeat runs to eliminate flaky classifications.
-- Guaranteeing that removing any single remaining unit causes the failure to disappear (1-minimal).
+- Guaranteeing that removing any single remaining unit causes the failure to disappear (1-minimal when one_minimal_verified=true).

@@ -151,6 +151,7 @@ if (args[0] === 'version' || args[0] === '-v' || args[0] === '--version') {
 
 if (args[0] === 'doctor') {
   await runDoctor();
+  process.exit(0);
 }
 
 if (args[0] === 'skills') {
@@ -160,6 +161,7 @@ if (args[0] === 'skills') {
     const runner = typeof process.versions.bun !== 'undefined' ? 'bunx' : 'npx';
     const child = spawn(runner, ['skills', 'add', 'imMamdouhaboammar/openreview'], { stdio: 'inherit' });
     child.on('close', (code) => process.exit(code ?? 0));
+    return;
   } else {
     console.log(`\nOpenReview Bundled Skills:`);
     console.log(`  - openreview-orchestrator: Master intent router (REVIEW, FIX, INVESTIGATE, VERIFY_CONFIG)`);

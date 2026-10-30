@@ -52,10 +52,10 @@ Non-deterministic defects (race conditions, network jitter, clock skew) frequent
 Pinpoint breaking commits across release boundaries without manual checkouts. Deep Digger coordinates non-interactive `git bisect run` workflows against test oracles, committing culprit commit hashes, authors, and timestamps directly into a tamper-evident evidence ledger.
 
 ### 5. Publication-Ready Incident Dossiers
-Generate self-contained HTML5 diagnostic reports with a single command (`deep-digger report --html dossier.html`). The resulting document embeds SVG causal DAGs, SHA-256 evidence ledgers, and reproduction scripts with zero external CDN dependencies, fully functional in air-gapped environments.
+Generate self-contained HTML5 diagnostic reports with a single command (`deep-digger report --html dossier.html`). The resulting document embeds SVG causal DAGs, SHA-256 evidence digests, and reproduction scripts with zero external CDN dependencies, fully functional in air-gapped environments.
 
-### 6. Cryptographic Audit Drift Detection
-Guarantee that investigated telemetry logs, configuration files, and codebases remain untampered. Deep Digger monitors SHA-256 fingerprints across the investigation lifecycle, immediately failing closed if referenced source files mutate out-of-band.
+### 6. Hash-Referenced Audit Drift Detection
+Guarantee that hash-referenced evidence files and telemetry traces remain drift-free throughout the investigation. Deep Digger tracks SHA-256 fingerprints across the investigation lifecycle, immediately failing closed if referenced source files mutate out-of-band.
 
 ---
 
@@ -67,7 +67,7 @@ Guarantee that investigated telemetry logs, configuration files, and codebases r
 | **Massive Failing Input** | Hours spent manually deleting lines from payloads | Algorithmic token-level reduction to minimal failing syntax in seconds |
 | **Flaky Test Suite** | Retrying builds until they happen to turn green | Empirical $P(\text{FAIL})$ calculation with strict non-determinism classification |
 | **Multi-Commit Regression** | Manual commit archaeology and git checkout jumping | Non-interactive automated bisect logging culprit metadata to ledger |
-| **Post-Mortem Documentation** | Vague retrospective notes without reproducible proofs | Cryptographically signed HTML dossier with embedded causal DAG |
+| **Post-Mortem Documentation** | Vague retrospective notes without reproducible proofs | Self-contained HTML dossier with embedded causal DAG and SHA-256 evidence digests |
 
 ---
 
@@ -97,7 +97,7 @@ bunx deep-digger doctor
 npx deep-digger doctor
 
 # Run case initialization
-npx deep-digger init cases/incident-01
+npx deep-digger init cases/incident-01 --title "Cache eviction failure" --symptom "Intermittent 500 error on logout"
 ```
 
 ### 2. Universal Agent Skill Installation
@@ -158,14 +158,14 @@ The `deep-digger` CLI coordinates case files, evidence tracking, and delta minim
 
 ```bash
 # 1. Initialize case folder
-deep-digger init cases/cache-corruption
+deep-digger init cases/cache-corruption --title "Cache corruption during concurrent writes" --symptom "Intermittent data loss in session cache"
 
 # 2. Register competing hypotheses
-deep-digger hypothesis cases/cache-corruption add H1 "Cache key collision due to unescaped colon"
-deep-digger hypothesis cases/cache-corruption add H2 "Eviction race during concurrent write bursts"
+deep-digger hypothesis cases/cache-corruption --claim "Cache key collision due to unescaped colon" --test "Key hashing collision test"
+deep-digger hypothesis cases/cache-corruption --claim "Eviction race during concurrent write bursts" --test "Concurrent thread hammer test"
 
 # 3. Attach verifiable evidence artifacts
-deep-digger evidence cases/cache-corruption add E1 logs/failing-trace.log supports H1
+deep-digger evidence cases/cache-corruption --hypothesis H1 --kind observation --effect supports --note "Failing trace logs show collision" --source logs/failing-trace.log
 
 # 4. Ingest OpenTelemetry, HAR, or JSON traces
 deep-digger trace cases/cache-corruption --hypothesis H1 --file traces/otel-span.json
@@ -175,31 +175,31 @@ deep-digger link cases/cache-corruption --parent H1 --child H2 --relation causes
 
 # 6. Evaluate empirical flakiness and measure P(FAIL)
 deep-digger flake cases/cache-corruption --hypothesis H1 \
-  --oracle "npm test -- tests/cache.test.ts" \
-  --repeats 10 --allow-exec
+  --repeats 10 --allow-exec \
+  -- npm test -- tests/cache.test.ts
 
 # 7. Record controlled experiments (requires explicit --allow-exec)
-deep-digger experiment cases/cache-corruption add H1 baseline \
-  --oracle "npm test -- tests/cache.test.ts" \
-  --allow-exec --repeat 2
+deep-digger experiment cases/cache-corruption --hypothesis H1 --phase baseline \
+  --allow-exec --repeats 2 \
+  -- npm test -- tests/cache.test.ts
 
-deep-digger experiment cases/cache-corruption add H1 intervention \
-  --oracle "npm test -- tests/cache.test.ts" \
-  --allow-exec --repeat 2
+deep-digger experiment cases/cache-corruption --hypothesis H1 --phase intervention \
+  --allow-exec --repeats 2 \
+  -- npm test -- tests/cache.test.ts
 
 # 8. Automated git bisect recorded into evidence ledger
 deep-digger bisect cases/cache-corruption --hypothesis H1 \
   --good v1.2.0 --bad v1.3.0 \
-  --oracle "npm test -- tests/cache.test.ts" \
-  --allow-exec
+  --allow-exec \
+  -- npm test -- tests/cache.test.ts
 
 # 9. Generate isolated test harness reproducer (python, node, bash)
 deep-digger repro cases/cache-corruption --template python
 
 # 10. Delta-debug minimal failing payload (lines or tokens)
-deep-digger minimize ./payload.json \
-  --granularity tokens \
+deep-digger minimize --input ./payload.json \
   --output ./minimal.json \
+  --granularity tokens \
   --allow-exec \
   -- python3 test_oracle.py {input}
 
@@ -207,7 +207,7 @@ deep-digger minimize ./payload.json \
 deep-digger view cases/cache-corruption
 
 # 12. Generate causal status report (text, json, or standalone HTML dossier)
-deep-digger report cases/cache-corruption --format text
+deep-digger report cases/cache-corruption
 deep-digger report cases/cache-corruption --html cases/cache-corruption/dossier.html
 ```
 

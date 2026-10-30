@@ -15,12 +15,12 @@ When investigating stubborn, flaky, intermittent, or high-impact failures:
 ## CLI Quickstart
 ```bash
 # Initialize case ledger
-deep-digger init cases/incident-01
+deep-digger init cases/incident-01 --title "Cache eviction failure" --symptom "Intermittent 500 error on logout"
 
 # Add competing hypotheses
-deep-digger hypothesis cases/incident-01 add H1 "Race condition in cache eviction"
-deep-digger hypothesis cases/incident-01 add H2 "Stale DNS TTL resolution"
+deep-digger hypothesis cases/incident-01 --claim "Race condition in cache eviction" --test "Concurrent logout stress test"
+deep-digger hypothesis cases/incident-01 --claim "Stale DNS TTL resolution" --test "Mock DNS resolver verification"
 
 # Generate evaluation report
-deep-digger report cases/incident-01 --format text
+deep-digger report cases/incident-01
 ```

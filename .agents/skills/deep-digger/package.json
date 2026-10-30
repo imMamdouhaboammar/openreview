@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/cli.js",
   "bin": {
-    "deep-digger": "dist/cli.js"
+    "deep-digger": "dist/cli.js",
+    "deep-digger-min": "dist/minimizer.js"
   },
   "repository": {
     "type": "git",

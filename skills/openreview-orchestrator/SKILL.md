@@ -123,14 +123,14 @@ openreview serve
 ### C. Root-Cause Investigation & Input Minimizer (`deep-digger` & `deep-digger-min`)
 ```bash
 # Line-level reduction for failing test cases
-deep-digger-min --input repro.txt --output minimal.txt --allow-exec -- cargo test --test regression
+deep-digger-min --input repro.txt --output minimal.txt --allow-exec -- cargo test --test regression -- {input}
 
 # Token-level reduction for syntax or JSON payloads
-deep-digger-min --input repro.json --output minimal.json --granularity tokens --allow-exec -- cargo test --test regression
+deep-digger-min --input repro.json --output minimal.json --granularity tokens --allow-exec -- cargo test --test regression -- {input}
 
 # Unified investigation CLI (standalone npm or OpenReview skill)
-deep-digger init cases/auth-bug
-deep-digger hypothesis cases/auth-bug add H-1 "Buffer overflow on unescaped input"
+deep-digger init cases/auth-bug --title "Buffer overflow on unescaped input" --symptom "Crash in parser on long token"
+deep-digger hypothesis cases/auth-bug --claim "Buffer overflow on unescaped input" --test "Run regression with long token"
 deep-digger view cases/auth-bug
 ```
 

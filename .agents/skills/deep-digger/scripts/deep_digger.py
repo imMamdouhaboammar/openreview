@@ -681,6 +681,11 @@ def generate_html_report(result: dict) -> str:
 """
 
 
+def _comment_safe(value: object) -> str:
+    text = " ".join(str(value if value is not None else "").split())
+    return text.replace("\\", "\\\\").replace('"""', "'''").replace("*/", "* /")
+
+
 def cmd_repro(args) -> None:
     data = read_case(args.folder)
     folder = Path(args.folder)
@@ -689,12 +694,14 @@ def cmd_repro(args) -> None:
     if repro_file.exists():
         raise ValueError(f"reproducer file already exists: {repro_file}")
 
+    case_id, title, symptom = (_comment_safe(data.get(k, "")) for k in ("id", "title", "symptom"))
+
     if args.template == "python":
         content = f'''#!/usr/bin/env python3
 """Deep Digger Isolated Reproducer
-Case ID: {data["id"]}
-Title: {data["title"]}
-Symptom: {data["symptom"]}
+Case ID: {case_id}
+Title: {title}
+Symptom: {symptom}
 """
 import sys
 
@@ -714,9 +721,9 @@ if __name__ == "__main__":
         content = f'''#!/usr/bin/env node
 /**
  * Deep Digger Isolated Reproducer
- * Case ID: {data["id"]}
- * Title: {data["title"]}
- * Symptom: {data["symptom"]}
+ * Case ID: {case_id}
+ * Title: {title}
+ * Symptom: {symptom}
  */
 
 function runReproduction() {{
@@ -735,9 +742,9 @@ try {{
     else:
         content = f'''#!/usr/bin/env bash
 # Deep Digger Isolated Reproducer
-# Case ID: {data["id"]}
-# Title: {data["title"]}
-# Symptom: {data["symptom"]}
+# Case ID: {case_id}
+# Title: {title}
+# Symptom: {symptom}
 set -euo pipefail
 
 echo "Running reproduction..."
@@ -758,25 +765,29 @@ def cmd_bisect(args) -> None:
     argv = normalize_command(args.command)
 
     try:
-        subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], check=True, capture_output=True)
+        subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], check=True, capture_output=True, timeout=60)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        raise ValueError("current directory is not inside a git repository")
+        raise ValueError("current directory is not inside a git repository") from None
 
     start_cmd = ["git", "bisect", "start", args.bad, args.good]
-    p_start = subprocess.run(start_cmd, capture_output=True, text=True)
+    p_start = subprocess.run(start_cmd, capture_output=True, text=True, timeout=60)
     if p_start.returncode != 0:
         raise ValueError(f"git bisect start failed: {p_start.stderr.strip()}")
 
-    bisect_run_cmd = ["git", "bisect", "run"] + argv
-    p_run = subprocess.run(bisect_run_cmd, capture_output=True, text=True, timeout=args.timeout)
-    output_text = p_run.stdout + "\n" + p_run.stderr
+    output_text = ""
+    try:
+        p_run = subprocess.run(["git", "bisect", "run", *argv], capture_output=True, text=True, timeout=args.timeout)
+        output_text = p_run.stdout + "\n" + p_run.stderr
+    except subprocess.TimeoutExpired:
+        output_text = ""
+    finally:
+        subprocess.run(["git", "bisect", "reset"], capture_output=True, timeout=60)
+
     culprit = None
     for line in output_text.splitlines():
         if "is the first bad commit" in line:
             culprit = line.split()[0]
             break
-
-    subprocess.run(["git", "bisect", "reset"], capture_output=True)
     result = {
         "hypothesis": args.hypothesis,
         "good_revision": args.good,
