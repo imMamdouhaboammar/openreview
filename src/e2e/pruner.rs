@@ -43,7 +43,7 @@ static NAME_ATTR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\bname=["']([^"']+)["']"#).expect("valid name regex"));
 
 static VALUE_ATTR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\bvalue=["']([^"']+)["']"#).expect("valid value regex"));
+    LazyLock::new(|| Regex::new(r#"(?i)\bvalue=["']([^"']+)["']"#).expect("valid value regex"));
 
 static PLACEHOLDER_ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\bplaceholder=["']([^"']+)["']"#).expect("valid placeholder regex")
@@ -90,10 +90,9 @@ impl SemanticElement {
             desc.push_str(&format!(" [data-testid=\"{test_id}\"]"));
         }
 
-        if let Some(val) = &self.value
-            && !val.is_empty()
-        {
-            desc.push_str(&format!(" (value: \"{val}\")"));
+        if self.value.as_deref().is_some_and(|value| !value.is_empty()) {
+            // A form value may contain arbitrary private data, regardless of type.
+            desc.push_str(" (value: \"[REDACTED_FORM_VALUE]\")");
         }
 
         desc
@@ -140,6 +139,7 @@ impl DomPruner {
         let cleaned = self.clean_raw_html(html);
         let mut elements = Vec::new();
         let mut id_counter = 1;
+        let sanitizer = crate::e2e::SecuritySanitizer::new();
 
         let interactive_tags = [
             "button", "a", "input", "select", "textarea", "form", "option", "summary", "dialog",
@@ -182,7 +182,10 @@ impl DomPruner {
 
             let test_id = TESTID_ATTR_RE.captures(attrs).map(|c| c[1].to_string());
             let input_type = TYPE_ATTR_RE.captures(attrs).map(|c| c[1].to_string());
-            let value = VALUE_ATTR_RE.captures(attrs).map(|c| c[1].to_string());
+            // Preserve only the fact that a value exists, never its contents.
+            let value = VALUE_ATTR_RE
+                .captures(attrs)
+                .map(|_| "[REDACTED_FORM_VALUE]".to_string());
             let placeholder = PLACEHOLDER_ATTR_RE
                 .captures(attrs)
                 .map(|c| c[1].to_string());
@@ -195,14 +198,18 @@ impl DomPruner {
             // Extract plain text snippet
             let clean_inner = STRIP_TAGS_RE.replace_all(inner, " ").trim().to_string();
 
-            let display_text = if clean_inner.len() > 80 {
+            let display_text = if matches!(tag.as_str(), "textarea" | "select" | "input")
+                && !clean_inner.is_empty()
+            {
+                "[REDACTED_FORM_VALUE]".to_string()
+            } else if clean_inner.len() > 80 {
                 format!("{}...", &clean_inner[..77])
             } else {
                 clean_inner
             };
 
             if is_interactive || !display_text.is_empty() {
-                elements.push(SemanticElement {
+                let mut element = SemanticElement {
                     id: id_counter,
                     tag,
                     role,
@@ -212,7 +219,22 @@ impl DomPruner {
                     input_type,
                     value,
                     placeholder,
-                });
+                };
+                element.text = sanitizer.sanitize(&element.text);
+                for text in [
+                    &mut element.role,
+                    &mut element.name,
+                    &mut element.test_id,
+                    &mut element.input_type,
+                    &mut element.value,
+                    &mut element.placeholder,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    *text = sanitizer.sanitize(text);
+                }
+                elements.push(element);
                 id_counter += 1;
             }
         }
@@ -239,7 +261,8 @@ impl DomPruner {
             out.push('\n');
         }
 
-        out
+        // This is the last boundary before agent/tool, CLI and report consumers.
+        crate::e2e::SecuritySanitizer::new().sanitize(&out)
     }
 }
 
@@ -282,7 +305,66 @@ mod tests {
 
         let input = tree.iter().find(|e| e.tag == "input").unwrap();
         assert_eq!(input.placeholder.as_deref(), Some("Enter your email"));
-        assert_eq!(input.value.as_deref(), Some("user@example.com"));
+        assert_eq!(input.value.as_deref(), Some("[REDACTED_FORM_VALUE]"));
+    }
+
+    #[test]
+    fn model_visible_observation_never_contains_raw_form_values() {
+        let html = r#"
+            <input type="password" value="TEST_ONLY_PASSWORD_MARKER" name="password" />
+            <input name='email' value='TEST_ONLY_EMAIL_MARKER' type='email'/>
+            <input VALUE="TEST_ONLY_UPPERCASE_MARKER" TYPE="password" />
+            <input type='hidden' name='access_token' value='TEST_ONLY_TOKEN_MARKER'/>
+            <input type='text' name='postal' value='TEST_ONLY_ORDINARY_MARKER'/>
+            <textarea name='note'>TEST_ONLY_TEXTAREA_MARKER</textarea>
+            <option value='TEST_ONLY_OPTION_MARKER'>United States</option>
+            <button data-testid="submit-btn">Submit</button>
+        "#;
+        let pruner = DomPruner::default();
+        let tree = pruner.extract_semantic_tree(html);
+        let observation = pruner.render_pruned_tree(html);
+        for marker in [
+            "TEST_ONLY_PASSWORD_MARKER",
+            "TEST_ONLY_EMAIL_MARKER",
+            "TEST_ONLY_UPPERCASE_MARKER",
+            "TEST_ONLY_TOKEN_MARKER",
+            "TEST_ONLY_ORDINARY_MARKER",
+            "TEST_ONLY_TEXTAREA_MARKER",
+            "TEST_ONLY_OPTION_MARKER",
+        ] {
+            assert!(
+                !observation.contains(marker),
+                "Leaked raw form marker {marker}"
+            );
+            assert!(!tree.iter().any(|node| node.value.as_deref() == Some(marker) || node.text.contains(marker)));
+        }
+        assert!(observation.contains("submit-btn"));
+        assert!(observation.contains("Submit"));
+        assert!(observation.contains("email"));
+    }
+
+    #[test]
+    fn model_visible_observation_sanitizes_secrets_in_text_and_metadata() {
+        let fake_key = format!("sk-{}", "a1b2c3d4".repeat(4));
+        let html = format!(r#"<h2>{fake_key}</h2><input placeholder="{fake_key}" />"#);
+        let observation = DomPruner::default().render_pruned_tree(&html);
+        assert!(!observation.contains(&fake_key));
+        assert!(observation.contains("[REDACTED_API_KEY]"));
+    }
+
+    #[test]
+    fn extracted_semantic_metadata_does_not_retain_personal_data_or_keys() {
+        let dummy_email = "only.a.fixture@example.org";
+        let dummy_key = format!("sk-{}", "AbCd1234".repeat(4));
+        let html = format!(
+            r#"<input name="{dummy_key}" placeholder="{dummy_email}" data-testid="{dummy_key}" /><h2>{dummy_email}</h2>"#
+        );
+        let tree = DomPruner::default().extract_semantic_tree(&html);
+        let serialized = serde_json::to_string(&tree).unwrap();
+        assert!(!serialized.contains(dummy_email));
+        assert!(!serialized.contains(&dummy_key));
+        assert!(serialized.contains("[REDACTED_EMAIL]"));
+        assert!(serialized.contains("[REDACTED_API_KEY]"));
     }
 
     #[test]
