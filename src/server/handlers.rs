@@ -7,7 +7,9 @@ use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::Sha256;
 use sha2::digest::KeyInit;
+use std::future::Future;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::error::AppError;
@@ -17,6 +19,19 @@ use crate::jobs::JobStatus;
 use crate::server::state::AppState;
 use crate::workflow::WorkflowParams;
 use crate::workflow::command::{WorkflowMode, parse_bot_command};
+
+/// Cancel an over-budget review or fix before it can occupy the job pool indefinitely.
+async fn run_with_job_deadline<T, F>(limit: Duration, workflow: F) -> Result<T, AppError>
+where
+    F: Future<Output = Result<T, AppError>>,
+{
+    tokio::time::timeout(limit, workflow).await.map_err(|_| {
+        AppError::Workflow(format!(
+            "Workflow deadline exceeded after {} seconds",
+            limit.as_secs()
+        ))
+    })?
+}
 
 pub async fn webhook_handler(
     State(state): State<AppState>,
@@ -130,6 +145,7 @@ pub async fn webhook_handler(
                 let jobs = state.jobs.clone();
                 let job_id = job.id.clone();
                 let mode = cmd.mode;
+                let max_job_duration = Duration::from_secs(state.config.max_job_duration_secs);
 
                 metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
 
@@ -163,7 +179,12 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match coordinator.execute_bot_workflow(params).await {
+                    match run_with_job_deadline(
+                        max_job_duration,
+                        coordinator.execute_bot_workflow(params),
+                    )
+                    .await
+                    {
                         Ok(res) => {
                             if res.success {
                                 persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
@@ -267,6 +288,7 @@ pub async fn webhook_handler(
                 let jobs = state.jobs.clone();
                 let job_id = job.id.clone();
                 let mode = cmd.mode;
+                let max_job_duration = Duration::from_secs(state.config.max_job_duration_secs);
 
                 metrics.active_workflows.fetch_add(1, Ordering::Relaxed);
 
@@ -300,7 +322,12 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match coordinator.execute_bot_workflow(params).await {
+                    match run_with_job_deadline(
+                        max_job_duration,
+                        coordinator.execute_bot_workflow(params),
+                    )
+                    .await
+                    {
                         Ok(res) => {
                             if res.success {
                                 persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
@@ -607,4 +634,39 @@ pub async fn root_handler(State(state): State<AppState>) -> Html<String> {
     );
 
     Html(html)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use std::future::pending;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn stalled_workflow_fails_and_releases_the_next_job_permit() {
+        let jobs = crate::jobs::JobManager::new(1);
+        let semaphore = jobs.semaphore();
+        let (started, queued) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn({
+            let semaphore = semaphore.clone();
+            async move {
+                let _permit = semaphore.acquire_owned().await.unwrap();
+                started.send(()).unwrap();
+                super::run_with_job_deadline(
+                    Duration::from_millis(20),
+                    pending::<Result<(), AppError>>(),
+                )
+                .await
+            }
+        });
+        queued.await.unwrap();
+
+        let next = tokio::time::timeout(Duration::from_millis(100), semaphore.acquire())
+            .await
+            .expect("next queued job should acquire permit after timed-out job")
+            .unwrap();
+        drop(next);
+        let result = running.await.unwrap();
+        assert!(matches!(result, Err(AppError::Workflow(message)) if message.contains("deadline")));
+    }
 }
