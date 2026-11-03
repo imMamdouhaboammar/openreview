@@ -104,6 +104,15 @@ pub async fn webhook_handler(
                 let actor = payload.comment.user.login.clone();
                 let comment_body = payload.comment.body.clone();
 
+                if cmd.mode == WorkflowMode::Review && !state.config.review_actor_allowed(&actor) {
+                    state.jobs.register_delivery(&delivery_id).await?;
+                    state
+                        .metrics
+                        .reviews_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(review_rejected_response("review_actor_not_approved"));
+                }
+
                 info!(
                     "Bot commanded ({:?}) by @{} in comment #{} on repo {}",
                     cmd.mode, actor, pr_number, repo_full_name
@@ -111,7 +120,7 @@ pub async fn webhook_handler(
 
                 let job = state
                     .jobs
-                    .create_job(
+                    .create_job_with_limits(
                         &delivery_id,
                         "issue_comment",
                         &repo_full_name,
@@ -119,8 +128,21 @@ pub async fn webhook_handler(
                         installation_id,
                         &actor,
                         cmd.mode,
+                        Some(state.config.review_quota),
                     )
-                    .await?;
+                    .await;
+                let job = match job {
+                    Ok(job) => job,
+                    Err(AppError::Unauthorized(_)) if cmd.mode == WorkflowMode::Review => {
+                        state.jobs.register_delivery(&delivery_id).await?;
+                        state
+                            .metrics
+                            .reviews_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Ok(review_rejected_response("review_quota_exhausted"));
+                    }
+                    Err(err) => return Err(err),
+                };
                 let Some(job) = job else {
                     return Ok(duplicate_delivery_response(&delivery_id));
                 };
@@ -246,9 +268,18 @@ pub async fn webhook_handler(
                 let head_sha = payload.pull_request.head.sha.clone();
                 let comment_body = payload.comment.body.clone();
 
+                if cmd.mode == WorkflowMode::Review && !state.config.review_actor_allowed(&actor) {
+                    state.jobs.register_delivery(&delivery_id).await?;
+                    state
+                        .metrics
+                        .reviews_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(review_rejected_response("review_actor_not_approved"));
+                }
+
                 let job = state
                     .jobs
-                    .create_job(
+                    .create_job_with_limits(
                         &delivery_id,
                         "pull_request_review_comment",
                         &repo_full_name,
@@ -256,8 +287,21 @@ pub async fn webhook_handler(
                         installation_id,
                         &actor,
                         cmd.mode,
+                        Some(state.config.review_quota),
                     )
-                    .await?;
+                    .await;
+                let job = match job {
+                    Ok(job) => job,
+                    Err(AppError::Unauthorized(_)) if cmd.mode == WorkflowMode::Review => {
+                        state.jobs.register_delivery(&delivery_id).await?;
+                        state
+                            .metrics
+                            .reviews_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Ok(review_rejected_response("review_quota_exhausted"));
+                    }
+                    Err(err) => return Err(err),
+                };
                 let Some(job) = job else {
                     return Ok(duplicate_delivery_response(&delivery_id));
                 };
@@ -386,6 +430,14 @@ pub async fn webhook_handler(
         .into_response())
 }
 
+fn review_rejected_response(reason: &str) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({"status": "ignored", "reason": reason})),
+    )
+        .into_response()
+}
+
 fn duplicate_delivery_response(delivery_id: &str) -> Response {
     info!("Duplicate webhook delivery {} ignored", delivery_id);
     (
@@ -505,6 +557,7 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
     let webhooks = state.metrics.webhooks_received.load(Ordering::Relaxed);
     let rev_completed = state.metrics.reviews_completed.load(Ordering::Relaxed);
     let rev_failed = state.metrics.reviews_failed.load(Ordering::Relaxed);
+    let rev_rejected = state.metrics.reviews_rejected.load(Ordering::Relaxed);
     let fix_completed = state.metrics.fixes_completed.load(Ordering::Relaxed);
     let fix_failed = state.metrics.fixes_failed.load(Ordering::Relaxed);
     let active = state.metrics.active_workflows.load(Ordering::Relaxed);
@@ -522,6 +575,9 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP openreview_reviews_failed_total Total failed reviews\n\
          # TYPE openreview_reviews_failed_total counter\n\
          openreview_reviews_failed_total {}\n\
+         # HELP openreview_reviews_rejected_total Review admission and quota rejections\n\
+         # TYPE openreview_reviews_rejected_total counter\n\
+         openreview_reviews_rejected_total {}\n\
          # HELP openreview_fixes_completed_total Total successful code fixes\n\
          # TYPE openreview_fixes_completed_total counter\n\
          openreview_fixes_completed_total {}\n\
@@ -531,7 +587,14 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP openreview_active_workflows Current active workflows\n\
          # TYPE openreview_active_workflows gauge\n\
          openreview_active_workflows {}\n",
-        uptime, webhooks, rev_completed, rev_failed, fix_completed, fix_failed, active
+        uptime,
+        webhooks,
+        rev_completed,
+        rev_failed,
+        rev_rejected,
+        fix_completed,
+        fix_failed,
+        active
     );
 
     (

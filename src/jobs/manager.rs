@@ -11,10 +11,40 @@ use tokio::sync::{Mutex, Semaphore};
 use tracing::info;
 use uuid::Uuid;
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ReviewReservation {
+    actor: String,
+    repo_full_name: String,
+    installation_id: Option<u64>,
+    admitted_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct StoredState {
     jobs: HashMap<String, JobRecord>,
     deliveries: HashMap<String, DateTime<Utc>>,
+    #[serde(default)]
+    review_reservations: Vec<ReviewReservation>,
+}
+
+/// Maximum number of admitted paid reviews in a sliding 24-hour window.
+/// Quotas are charged when the job is accepted, including failed jobs, so
+/// repeated failures cannot be used to bypass the operator's spend cap.
+#[derive(Clone, Copy, Debug)]
+pub struct ReviewQuotaLimits {
+    pub actor_per_day: usize,
+    pub repo_per_day: usize,
+    pub installation_per_day: usize,
+}
+
+impl Default for ReviewQuotaLimits {
+    fn default() -> Self {
+        Self {
+            actor_per_day: 2,
+            repo_per_day: 10,
+            installation_per_day: 30,
+        }
+    }
 }
 
 pub struct JobManager {
@@ -53,6 +83,21 @@ impl JobManager {
         } else {
             StoredState::default()
         };
+        // Upgrade a pre-quota state file conservatively so existing paid
+        // Reviews from the last 24h still consume quota after deployment.
+        if state.review_reservations.is_empty() {
+            state.review_reservations = state
+                .jobs
+                .values()
+                .filter(|job| job.mode == WorkflowMode::Review)
+                .map(|job| ReviewReservation {
+                    actor: job.actor.clone(),
+                    repo_full_name: job.repo_full_name.clone(),
+                    installation_id: job.installation_id,
+                    admitted_at: job.created_at,
+                })
+                .collect();
+        }
         for job in state.jobs.values_mut() {
             if !matches!(
                 job.status,
@@ -82,6 +127,10 @@ impl JobManager {
 
     fn prune(state: &mut StoredState) {
         let cutoff = Utc::now() - Duration::days(7);
+        let review_cutoff = Utc::now() - Duration::hours(24);
+        state
+            .review_reservations
+            .retain(|entry| entry.admitted_at > review_cutoff);
         state.deliveries.retain(|_, time| *time >= cutoff);
         if state.deliveries.len() > 20_000 {
             let mut items: Vec<_> = state
@@ -143,9 +192,82 @@ impl JobManager {
         actor: &str,
         mode: WorkflowMode,
     ) -> Result<Option<JobRecord>> {
+        self.create_job_with_limits(
+            delivery_id,
+            event_type,
+            repo_full_name,
+            pr_number,
+            installation_id,
+            actor,
+            mode,
+            None,
+        )
+        .await
+    }
+
+    /// Both quotas and job reservation run under the same persistence mutex.
+    /// Webhook paths must pass a ReviewQuotaLimits to enforce paid work admission.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_job_with_limits(
+        &self,
+        delivery_id: &str,
+        event_type: &str,
+        repo_full_name: &str,
+        pr_number: u64,
+        installation_id: Option<u64>,
+        actor: &str,
+        mode: WorkflowMode,
+        review_limits: Option<ReviewQuotaLimits>,
+    ) -> Result<Option<JobRecord>> {
         let mut guard = self.state.lock().await;
         if !delivery_id.is_empty() && guard.deliveries.contains_key(delivery_id) {
             return Ok(None);
+        }
+        let now = Utc::now();
+        if mode == WorkflowMode::Review
+            && let Some(limits) = review_limits
+        {
+            let since = now - Duration::hours(24);
+            let recent = guard
+                .review_reservations
+                .iter()
+                .filter(|entry| entry.admitted_at > since)
+                .collect::<Vec<_>>();
+            if recent
+                .iter()
+                .filter(|job| {
+                    job.actor.eq_ignore_ascii_case(actor) && job.installation_id == installation_id
+                })
+                .count()
+                >= limits.actor_per_day
+            {
+                return Err(AppError::Unauthorized(
+                    "Daily review quota reached for this actor".into(),
+                ));
+            }
+            if recent
+                .iter()
+                .filter(|job| {
+                    job.repo_full_name.eq_ignore_ascii_case(repo_full_name)
+                        && job.installation_id == installation_id
+                })
+                .count()
+                >= limits.repo_per_day
+            {
+                return Err(AppError::Unauthorized(
+                    "Daily review quota reached for this repository".into(),
+                ));
+            }
+            if recent
+                .iter()
+                .filter(|job| job.installation_id == installation_id)
+                .count()
+                >= limits.installation_per_day
+            {
+                return Err(AppError::Unauthorized(
+                    "Daily review quota reached for this installation".into(),
+                ));
+            }
         }
         let pending = guard
             .jobs
@@ -158,7 +280,6 @@ impl JobManager {
             ));
         }
         let id = Uuid::new_v4().to_string();
-        let now = Utc::now();
 
         let record = JobRecord {
             id: id.clone(),
@@ -177,6 +298,14 @@ impl JobManager {
 
         let before = guard.clone();
         guard.jobs.insert(id, record.clone());
+        if mode == WorkflowMode::Review && review_limits.is_some() {
+            guard.review_reservations.push(ReviewReservation {
+                actor: actor.to_string(),
+                repo_full_name: repo_full_name.to_string(),
+                installation_id,
+                admitted_at: now,
+            });
+        }
         if !delivery_id.is_empty() {
             guard.deliveries.insert(delivery_id.to_string(), now);
         }
@@ -360,6 +489,169 @@ mod tests {
         }
         assert_eq!(accepted, 1);
         assert_eq!(mgr.list_jobs().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn distinct_concurrent_review_deliveries_cannot_exceed_actor_quota() {
+        let manager = Arc::new(JobManager::new(30));
+        let limits = ReviewQuotaLimits {
+            actor_per_day: 2,
+            repo_per_day: 3,
+            installation_per_day: 4,
+        };
+        let mut attempts = Vec::new();
+        for n in 0..24 {
+            let manager = manager.clone();
+            attempts.push(tokio::spawn(async move {
+                manager
+                    .create_job_with_limits(
+                        &format!("unique-delivery-{n}"),
+                        "issue_comment",
+                        "org/repo",
+                        41,
+                        Some(101),
+                        "public-user",
+                        WorkflowMode::Review,
+                        Some(limits),
+                    )
+                    .await
+                    .is_ok()
+            }));
+        }
+        let mut accepted = 0;
+        for attempt in attempts {
+            accepted += usize::from(attempt.await.unwrap());
+        }
+        assert_eq!(
+            accepted, 2,
+            "quota must be atomic across unique webhook deliveries"
+        );
+        assert_eq!(manager.list_jobs().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn distinct_actors_share_repository_and_installation_daily_caps() {
+        let manager = JobManager::new(10);
+        let limits = ReviewQuotaLimits {
+            actor_per_day: 10,
+            repo_per_day: 1,
+            installation_per_day: 2,
+        };
+        for (delivery, repo, actor, allowed) in [
+            ("one", "org/repo-one", "alice", true),
+            ("two", "org/repo-one", "bob", false),
+            ("three", "org/repo-two", "charlie", true),
+            ("four", "org/repo-three", "dave", false),
+        ] {
+            let result = manager
+                .create_job_with_limits(
+                    delivery,
+                    "issue_comment",
+                    repo,
+                    1,
+                    Some(100),
+                    actor,
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await;
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "unexpected quota outcome for {delivery}"
+            );
+        }
+        assert_eq!(manager.list_jobs().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn review_quotas_survive_restart_and_expire_after_one_day() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        let limits = ReviewQuotaLimits {
+            actor_per_day: 1,
+            repo_per_day: 2,
+            installation_per_day: 2,
+        };
+        let first = JobManager::persistent(&path, 3).unwrap();
+        first
+            .create_job_with_limits(
+                "delivery-a",
+                "issue_comment",
+                "org/repo",
+                4,
+                Some(101),
+                "alice",
+                WorkflowMode::Review,
+                Some(limits),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        drop(first);
+        let restarted = JobManager::persistent(&path, 3).unwrap();
+        assert!(
+            restarted
+                .create_job_with_limits(
+                    "delivery-b",
+                    "issue_comment",
+                    "org/repo",
+                    4,
+                    Some(101),
+                    "alice",
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await
+                .is_err(),
+            "restart must not reset spend reservations"
+        );
+
+        {
+            let mut state = restarted.state.lock().await;
+            state.jobs.clear(); // Simulate bounded history pruning.
+            restarted.save(&state).unwrap();
+        }
+        assert!(
+            restarted
+                .create_job_with_limits(
+                    "still-exhausted",
+                    "issue_comment",
+                    "org/repo",
+                    4,
+                    Some(101),
+                    "alice",
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await
+                .is_err(),
+            "quota reservations must survive truncation of job history"
+        );
+        {
+            let mut state = restarted.state.lock().await;
+            for reservation in &mut state.review_reservations {
+                reservation.admitted_at = Utc::now() - Duration::hours(25);
+            }
+            restarted.save(&state).unwrap();
+        }
+        assert!(
+            restarted
+                .create_job_with_limits(
+                    "delivery-c",
+                    "issue_comment",
+                    "org/repo",
+                    4,
+                    Some(101),
+                    "alice",
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            "old quota reservations must expire"
+        );
     }
 
     #[tokio::test]
