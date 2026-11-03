@@ -69,6 +69,21 @@ pub fn get_standard_tools(mode: WorkflowMode) -> Vec<ToolDefinition> {
     });
 
     tools.push(ToolDefinition {
+        name: "e2eFindErrors".to_string(),
+        description: "Run autonomous End-to-End error finding and accessibility probing against a target URL or preview deployment.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The preview or localhost endpoint URL to probe"
+                }
+            },
+            "required": ["url"]
+        }),
+    });
+
+    tools.push(ToolDefinition {
         name: "reply".to_string(),
         description: "Post a review comment or fix report on the pull request.".to_string(),
         parameters: json!({

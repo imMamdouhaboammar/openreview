@@ -43,6 +43,9 @@ Commands:
   action [--dry-run]
       Run inside GitHub Actions runner using event payload
   
+  e2e <find-errors|run|cache> [options]
+      Run autonomous E2E error finder, replay verification, or cache management
+  
   verify-config
       Validate environment variables, GitHub App credentials, and LLM connectivity
   
@@ -161,7 +164,6 @@ if (args[0] === 'skills') {
     const runner = typeof process.versions.bun !== 'undefined' ? 'bunx' : 'npx';
     const child = spawn(runner, ['skills', 'add', 'imMamdouhaboammar/openreview'], { stdio: 'inherit' });
     child.on('close', (code) => process.exit(code ?? 0));
-    return;
   } else {
     console.log(`\nOpenReview Bundled Skills:`);
     console.log(`  - openreview-orchestrator: Master intent router (REVIEW, FIX, INVESTIGATE, VERIFY_CONFIG)`);

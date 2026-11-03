@@ -172,6 +172,16 @@ impl ProjectVerifier {
             commands.push(("Pytest".to_string(), "pytest".to_string()));
         }
 
+        if dir.join(".openreview").join("e2e-cache").exists()
+            || dir.join("e2e.config.ts").exists()
+            || dir.join("playwright.config.ts").exists()
+        {
+            commands.push((
+                "OpenReview E2E".to_string(),
+                "openreview e2e run --test-name pr_verification".to_string(),
+            ));
+        }
+
         commands
     }
 }
@@ -196,6 +206,11 @@ fn evidence_of_executed_tests(name: &str, stdout: &str, stderr: &str) -> bool {
             (line.starts_with("ok ") || line.starts_with("ok\t"))
                 && !line.contains("[no tests to run]")
         });
+    }
+    if name == "OpenReview E2E" {
+        return combined.contains("Replay successfully validated")
+            || combined.contains("Total Steps:")
+            || combined.contains("Semantic Interactive Elements Discovered:");
     }
     combined.lines().any(|line| {
         let words: Vec<&str> = line.split_whitespace().collect();

@@ -320,6 +320,7 @@ flowchart TD
 | **Workflow policy** | `src/workflow/` | Command parsing, permission gates, verification, publication |
 | **Execution boundary** | `src/sandbox/`, `Dockerfile.sandbox` | Ephemeral isolated workspace and resource restrictions |
 | **AI providers** | `src/llm/` | Provider adapters and model calls |
+| **End-to-End Error Finder** | `src/e2e/` | Autonomous E2E bug discovery, semantic state normalizer, fail-closed PII sanitizer, and ACID replay cache |
 | **Investigation engine** | `skills/deep-digger/` | Token and line input minimization, causal DAGs, flake analysis |
 | **Orchestration layer** | `skills/openreview-orchestrator/` | Natural language intent routing (Review, Fix, Investigate, Verify-Config) |
 | **Delivery** | `action.yml`, `docker-compose.yml` | Per-repository Actions or self-hosted service |
@@ -379,6 +380,33 @@ deep-digger-min --input repro_large.txt --output repro_minimal.txt --allow-exec 
 
 # Token-level reduction for JSON payloads and AST syntax
 deep-digger-min --input bad_payload.json --output minimal.json --granularity tokens --allow-exec -- ./test_oracle.sh {input}
+```
+
+---
+
+## End-to-End Error Finders: Fast, Secure & Resilient Testing
+
+Traditional E2E testing tools suffer from brittle replay caches, secret leaks, token bloat, and action interception (e.g. styled wrappers or SVG backdrops). OpenReview includes a native Rust End-to-End Error Finder subsystem that provides:
+
+1. **Semantic State Normalization:** Cleanses dynamic timestamps, ordinal dates (`October 26th`), relative times (`5 mins ago`), minted IDs (`PROJ-016`), and Next.js route announcements to produce bulletproof deterministic state hashes.
+2. **Zero-Trust Security & PII Redaction:** Fail-closed masking of API keys, JWTs, bearer tokens, credit cards, and password fields across traces, DOM captures, and error reports.
+3. **Semantic DOM Pruning:** Compresses dense pages into concise accessibility trees under strict token budgets (max 2,500 tokens) without syntax truncation bugs.
+4. **Adaptive Settlement Oracle:** Eliminates arbitrary `sleep` timeouts with dual-condition debouncing (network quiescence + DOM stability).
+5. **Multi-Layer Element Piercing:** Dispatches actions cleanly through styled UI wrapper spans (Radix, Element Plus) and SVG overlay backdrops.
+6. **Causal Delta Debugging (ddmin):** When an E2E error occurs, automatically minimizes the action sequence to the 1-minimal reproduction steps and localizes the root cause against the PR diff.
+
+### CLI Usage
+
+```bash
+# Probe a web application or PR preview for runtime bugs and accessibility defects
+openreview e2e find-errors --url http://localhost:3000 --depth 3
+
+# Validate an E2E replay manifest against a local or staging endpoint
+openreview e2e run --test-name checkout_flow --url http://localhost:3000
+
+# Inspect or clean the replay cache
+openreview e2e cache status
+openreview e2e cache clean
 ```
 
 ---

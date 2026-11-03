@@ -83,12 +83,82 @@ pub enum Commands {
         #[arg(long, default_value = "example/repo")]
         repo: String,
     },
+
+    /// End-to-End autonomous error finding, replay verification, and cache management
+    E2e {
+        #[command(subcommand)]
+        subcommand: E2eSubcommands,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum E2eSubcommands {
+    /// Probe a target URL, preview app, or local server for runtime errors, broken routes, and accessibility defects
+    FindErrors {
+        /// Target URL to probe (e.g. http://localhost:3000 or https://preview.example.com)
+        #[arg(short, long)]
+        url: String,
+
+        /// Maximum exploration depth
+        #[arg(short, long, default_value_t = 3)]
+        depth: usize,
+
+        /// Run Causal Delta-Debugging (ddmin) to minimize reproducing steps
+        #[arg(long, default_value_t = true)]
+        causal: bool,
+    },
+
+    /// Run and verify a recorded E2E replay manifest against a live or sandboxed endpoint
+    Run {
+        /// Replay manifest test name or file path
+        #[arg(short, long)]
+        test_name: String,
+
+        /// Base URL override for testing environments
+        #[arg(short, long)]
+        url: Option<String>,
+
+        /// Path to replay cache directory
+        #[arg(long, default_value = ".openreview/e2e-cache")]
+        cache_dir: String,
+    },
+
+    /// Manage the E2E replay cache
+    Cache {
+        /// Cache operation: status or clean
+        #[arg(default_value = "status")]
+        action: String,
+
+        /// Path to replay cache directory
+        #[arg(long, default_value = ".openreview/e2e-cache")]
+        cache_dir: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands};
+    use super::{Cli, Commands, E2eSubcommands};
     use clap::Parser;
+
+    #[test]
+    fn e2e_command_parses_subcommands() {
+        let args = Cli::try_parse_from([
+            "openreview",
+            "e2e",
+            "find-errors",
+            "--url",
+            "http://localhost:3000",
+            "--depth",
+            "5",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Commands::E2e {
+                subcommand: E2eSubcommands::FindErrors { depth: 5, .. }
+            }
+        ));
+    }
 
     #[test]
     fn registration_link_is_a_first_class_command_without_github_credentials() {
