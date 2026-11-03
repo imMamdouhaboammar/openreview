@@ -18,10 +18,7 @@ impl GeminiProvider {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let client = crate::llm::http::HttpDeadlines::from_env()?.client(headers, false)?;
 
         Ok(Self {
             client,
@@ -41,11 +38,7 @@ impl GeminiProvider {
             HeaderValue::from_str(&format!("Bearer {}", self.api_key))
                 .map_err(|error| AppError::Config(error.to_string()))?,
         );
-        self.client = reqwest::Client::builder()
-            .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.client = crate::llm::http::HttpDeadlines::from_env()?.client(headers, true)?;
         self.custom_base_url = Some(base_url);
         Ok(self)
     }

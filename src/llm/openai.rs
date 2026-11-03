@@ -42,10 +42,7 @@ impl OpenAiProvider {
             None
         };
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let client = crate::llm::http::HttpDeadlines::from_env()?.client(headers, false)?;
 
         Ok(Self {
             client,
@@ -66,11 +63,7 @@ impl OpenAiProvider {
             HeaderValue::from_str(&format!("Bearer {}", self._api_key))
                 .map_err(|error| AppError::Config(error.to_string()))?,
         );
-        self.client = reqwest::Client::builder()
-            .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.client = crate::llm::http::HttpDeadlines::from_env()?.client(headers, true)?;
         self.chat_endpoint = Some(endpoint);
         Ok(self)
     }
