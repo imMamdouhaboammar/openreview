@@ -3,6 +3,7 @@ pub mod agent;
 pub mod branding;
 pub mod cli;
 pub mod config;
+pub mod e2e;
 pub mod error;
 pub mod github;
 pub mod jobs;

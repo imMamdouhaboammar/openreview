@@ -363,6 +363,28 @@ impl<'a> AgentRunner<'a> {
                     }
                 }
             }
+            "e2eFindErrors" => {
+                let url = call.arguments["url"].as_str().unwrap_or_default();
+                let subsystem = crate::e2e::E2eSubsystem::new();
+                let client = reqwest::Client::new();
+                match client.get(url).send().await {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let html = resp.text().await.unwrap_or_default();
+                        let tree = subsystem.pruner.render_pruned_tree(&html);
+                        if status.is_client_error() || status.is_server_error() {
+                            format!(
+                                "E2E Probing Result: HTTP {status} Error detected on {url}!\n\nPruned Semantic Tree:\n{tree}"
+                            )
+                        } else {
+                            format!(
+                                "E2E Probing Result: HTTP {status} OK on {url}. Endpoint is accessible.\n\nPruned Semantic Tree:\n{tree}"
+                            )
+                        }
+                    }
+                    Err(e) => format!("E2E Probing Error: Failed to connect to '{url}': {e}"),
+                }
+            }
             "reply" => {
                 let body = call.arguments["body"].as_str().unwrap_or_default();
                 if body.trim().is_empty() {
