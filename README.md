@@ -229,6 +229,11 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVA
 GITHUB_APP_WEBHOOK_SECRET=replace_with_a_random_secret
 BOT_USERNAME=your_real_app_mention_handle
 ALLOWED_INSTALLATION_IDS=123456
+REVIEW_ALLOWED_ACTORS=your-github-login
+ALLOW_PUBLIC_REVIEWS=false
+REVIEW_ACTOR_DAILY_LIMIT=2
+REVIEW_REPO_DAILY_LIMIT=10
+REVIEW_INSTALLATION_DAILY_LIMIT=30
 LLM_PROVIDER=openrouter
 LLM_MODEL=your/provider-model
 OPENROUTER_API_KEY=your_key
@@ -239,6 +244,8 @@ SANDBOX_WORKSPACE_DIR=/srv/openreview/workspaces
 ```
 
 Keep `.env` and private keys out of source control. Set `ALLOWED_INSTALLATION_IDS` only after installing the App and identifying the installation ID; empty means no webhook jobs are admitted. The mention handle must match the actual App account, not an assumed `openreview` username.
+
+Paid webhook Reviews require a second approval: `REVIEW_ALLOWED_ACTORS` accepts a comma-separated set of GitHub usernames. With an empty list, Review commands from every commenter are ignored, even in approved installations. To accept public Review commands intentionally, set `ALLOW_PUBLIC_REVIEWS=true`. Both approved reviewers and public users consume persistent 24-hour job limits for each actor, repository and installation. The defaults are 2, 10, and 30 respectively. Accepted jobs retain their reservation after failing or restarting, preventing repeated failed jobs from resetting spending limits. These caps bound the number of paid runs; they do not provide currency-based or model-price accounting. Set limits to match your provider budget and the per-run token ceiling before enabling public requests.
 
 ### 2. Separate the trusted service from the untrusted sandbox
 
