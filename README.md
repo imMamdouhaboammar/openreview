@@ -395,6 +395,8 @@ Traditional E2E testing tools suffer from brittle replay caches, secret leaks, t
 5. **Multi-Layer Element Piercing:** Dispatches actions cleanly through styled UI wrapper spans (Radix, Element Plus) and SVG overlay backdrops.
 6. **Causal Delta Debugging (ddmin):** When an E2E error occurs, automatically minimizes the action sequence to the 1-minimal reproduction steps and localizes the root cause against the PR diff.
 
+**E2E observation privacy:** Raw form values are never retained in extracted semantic observations, including ordinary text inputs, hidden values, option attributes, and textarea contents. Reports replace `Fill`, `FillSecret`, and `Select` action values with `[REDACTED_FORM_VALUE]`. Recognizable API keys, authentication tokens, payment-card numbers, and email addresses are also masked in metadata and rendered output. UI roles, ordinary labels, and test IDs remain available after sensitive-pattern sanitization. Reported reproduction steps use placeholders for input values, so any replay requires operator-supplied test data
+
 ### CLI Usage
 
 ```bash
