@@ -18,6 +18,10 @@ inputs:
     description: Suppress remote comments and pushes
     required: false
     default: 'false'
+  e2e_allowed_previews:
+    description: JSON object mapping owner/repo to explicitly approved preview origins, default deny
+    required: false
+    default: ''
   anthropic_api_key:
     description: Anthropic key supplied from Actions Secrets
     required: false
@@ -85,6 +89,7 @@ runs:
         LLM_PROVIDER: ${{ inputs.provider }}
         LLM_MODEL: ${{ inputs.model }}
         BOT_USERNAME: ${{ inputs.bot_username }}
+        E2E_ALLOWED_PREVIEWS: ${{ inputs.e2e_allowed_previews }}
         SANDBOX_DRIVER: docker
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key }}
