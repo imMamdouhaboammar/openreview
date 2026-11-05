@@ -33,6 +33,20 @@ where
     })?
 }
 
+/// Contain workflow panics so the surrounding job task can persist Failed
+/// and decrement active-workflow metrics through its existing error path.
+async fn run_workflow_catching_panics<F, T>(future: F) -> Result<T, AppError>
+where
+    F: std::future::Future<Output = Result<T, AppError>> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(future).await.map_err(|error| {
+        AppError::Internal(format!(
+            "Workflow execution terminated unexpectedly: {error}"
+        ))
+    })?
+}
+
 pub async fn webhook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -179,10 +193,13 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match run_with_job_deadline(
-                        max_job_duration,
-                        coordinator.execute_bot_workflow(params),
-                    )
+                    match run_workflow_catching_panics(async move {
+                        run_with_job_deadline(
+                            max_job_duration,
+                            coordinator.execute_bot_workflow(params),
+                        )
+                        .await
+                    })
                     .await
                     {
                         Ok(res) => {
@@ -322,10 +339,13 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match run_with_job_deadline(
-                        max_job_duration,
-                        coordinator.execute_bot_workflow(params),
-                    )
+                    match run_workflow_catching_panics(async move {
+                        run_with_job_deadline(
+                            max_job_duration,
+                            coordinator.execute_bot_workflow(params),
+                        )
+                        .await
+                    })
                     .await
                     {
                         Ok(res) => {
@@ -646,16 +666,27 @@ mod deadline_tests {
     async fn stalled_workflow_fails_and_releases_the_next_job_permit() {
         let jobs = crate::jobs::JobManager::new(1);
         let semaphore = jobs.semaphore();
+        struct DropSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = DropSignal(dropped.clone());
         let (started, queued) = tokio::sync::oneshot::channel();
         let running = tokio::spawn({
             let semaphore = semaphore.clone();
             async move {
                 let _permit = semaphore.acquire_owned().await.unwrap();
                 started.send(()).unwrap();
-                super::run_with_job_deadline(
-                    Duration::from_millis(20),
-                    pending::<Result<(), AppError>>(),
-                )
+                run_workflow_catching_panics(async move {
+                    super::run_with_job_deadline(Duration::from_millis(20), async move {
+                        let _signal = signal;
+                        pending::<Result<(), AppError>>().await
+                    })
+                    .await
+                })
                 .await
             }
         });
@@ -668,5 +699,60 @@ mod deadline_tests {
         drop(next);
         let result = running.await.unwrap();
         assert!(matches!(result, Err(AppError::Workflow(message)) if message.contains("deadline")));
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "expired workflow must be dropped, not detached"
+        );
+    }
+}
+
+#[cfg(test)]
+mod workflow_panic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unexpected_workflow_panic_can_persist_a_failed_job() {
+        let jobs = crate::jobs::JobManager::new(1);
+        let job = jobs
+            .create_job(
+                "",
+                "issue_comment",
+                "owner/repo",
+                1,
+                Some(10),
+                "actor",
+                WorkflowMode::Review,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(persist_job_status(&jobs, &job.id, JobStatus::Running, None).await);
+
+        let result = run_workflow_catching_panics(async {
+            panic!("intentional isolated task panic");
+            #[allow(unreachable_code)]
+            Ok::<(), AppError>(())
+        })
+        .await;
+        let error = result.expect_err("panicking workflow must return an error to the job handler");
+        assert!(format!("{error}").contains("Workflow execution terminated unexpectedly"));
+
+        assert!(
+            persist_job_status(&jobs, &job.id, JobStatus::Failed, Some(error.to_string())).await
+        );
+        let final_job = jobs.get_job(&job.id).await.unwrap();
+        assert_eq!(final_job.status, JobStatus::Failed);
+        assert!(
+            final_job
+                .error_message
+                .unwrap()
+                .contains("terminated unexpectedly")
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_workflow_result_is_preserved() {
+        let result = run_workflow_catching_panics(async { Ok::<u8, AppError>(7) }).await;
+        assert_eq!(result.unwrap(), 7);
     }
 }

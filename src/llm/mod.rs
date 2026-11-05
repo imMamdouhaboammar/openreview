@@ -146,6 +146,7 @@ mod tests {
             github_app_installation_id: None,
             allowed_installation_ids: Default::default(),
             bot_username: "openreview".into(),
+            e2e_probe_policy: Default::default(),
             llm_provider: provider.into(),
             model_name: "test-model".into(),
             anthropic_api_key: None,

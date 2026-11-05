@@ -70,7 +70,7 @@ pub fn get_standard_tools(mode: WorkflowMode) -> Vec<ToolDefinition> {
 
     tools.push(ToolDefinition {
         name: "e2eFindErrors".to_string(),
-        description: "Run autonomous End-to-End error finding and accessibility probing against a target URL or preview deployment.".to_string(),
+        description: "Probe an operator-approved preview origin for the current repository; all other network destinations are denied.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
