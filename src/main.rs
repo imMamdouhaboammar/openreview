@@ -8,6 +8,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use openreview::cli::{Cli, Commands};
 use openreview::config::Config;
+use openreview::e2e::truncate_with_ellipsis;
 use openreview::error::{AppError, Result};
 use openreview::llm::create_llm_provider;
 use openreview::sandbox::{DockerSandboxDriver, LocalSandboxDriver, SandboxDriver};
@@ -62,11 +63,7 @@ async fn main() -> Result<()> {
                 println!(
                     "├──────────────────────────────────────────────────────────────────────────────┤"
                 );
-                let display_url = if url.len() > 56 {
-                    format!("{}...", &url[..53])
-                } else {
-                    url.clone()
-                };
+                let display_url = truncate_with_ellipsis(url, 56);
                 println!("│  Target URL       : {:<56} │", display_url);
                 println!("│  Exploration Depth: {:<56} │", format!("{depth} hops"));
                 println!(
@@ -156,16 +153,8 @@ async fn main() -> Result<()> {
                             "├──────────────────────────────────────────────────────────────────────────────┤"
                         );
                         let err_msg = e.to_string();
-                        let disp_err = if err_msg.len() > 66 {
-                            format!("{}...", &err_msg[..63])
-                        } else {
-                            err_msg
-                        };
-                        let disp_url = if url.len() > 66 {
-                            format!("{}...", &url[..63])
-                        } else {
-                            url.clone()
-                        };
+                        let disp_err = truncate_with_ellipsis(&err_msg, 66);
+                        let disp_url = truncate_with_ellipsis(url, 66);
                         println!("│  Target: {:<67} │", disp_url);
                         println!("│  Error : {:<67} │", disp_err);
                         println!(
@@ -188,25 +177,13 @@ async fn main() -> Result<()> {
                 println!(
                     "├──────────────────────────────────────────────────────────────────────────────┤"
                 );
-                let disp_test = if test_name.len() > 63 {
-                    format!("{}...", &test_name[..60])
-                } else {
-                    test_name.clone()
-                };
+                let disp_test = truncate_with_ellipsis(test_name, 63);
                 println!("│  Test Case : {:<63} │", disp_test);
                 if let Some(u) = url {
-                    let disp_u = if u.len() > 63 {
-                        format!("{}...", &u[..60])
-                    } else {
-                        u.clone()
-                    };
+                    let disp_u = truncate_with_ellipsis(u, 63);
                     println!("│  Override  : {:<63} │", disp_u);
                 }
-                let disp_cache = if cache_dir.len() > 63 {
-                    format!("{}...", &cache_dir[..60])
-                } else {
-                    cache_dir.clone()
-                };
+                let disp_cache = truncate_with_ellipsis(cache_dir, 63);
                 println!("│  Cache Dir : {:<63} │", disp_cache);
                 println!(
                     "└──────────────────────────────────────────────────────────────────────────────┘"
@@ -249,11 +226,7 @@ async fn main() -> Result<()> {
                         );
                         let missing_msg =
                             format!("No cached replay manifest found for test '{test_name}'.");
-                        let disp_msg = if missing_msg.len() > 74 {
-                            format!("{}...", &missing_msg[..71])
-                        } else {
-                            missing_msg
-                        };
+                        let disp_msg = truncate_with_ellipsis(&missing_msg, 74);
                         println!("│  {:<74} │", disp_msg);
                         println!(
                             "│  {:<74} │",
@@ -285,11 +258,7 @@ async fn main() -> Result<()> {
                                 "├──────────────────────────────────────────────────────────────────────────────┤"
                             );
                             let disp_path = format!("{}", path.display());
-                            let disp = if disp_path.len() > 69 {
-                                format!("{}...", &disp_path[..66])
-                            } else {
-                                disp_path
-                            };
+                            let disp = truncate_with_ellipsis(&disp_path, 69);
                             println!("│  Path: {:<69} │", disp);
                             println!(
                                 "└──────────────────────────────────────────────────────────────────────────────┘"
@@ -305,11 +274,7 @@ async fn main() -> Result<()> {
                                 "├──────────────────────────────────────────────────────────────────────────────┤"
                             );
                             let msg = format!("Cache directory does not exist: {}", path.display());
-                            let disp = if msg.len() > 74 {
-                                format!("{}...", &msg[..71])
-                            } else {
-                                msg
-                            };
+                            let disp = truncate_with_ellipsis(&msg, 74);
                             println!("│  {:<74} │", disp);
                             println!(
                                 "└──────────────────────────────────────────────────────────────────────────────┘"
@@ -338,11 +303,7 @@ async fn main() -> Result<()> {
                             format!("{count} entries")
                         );
                         let disp_path = format!("{}", path.display());
-                        let disp = if disp_path.len() > 55 {
-                            format!("{}...", &disp_path[..52])
-                        } else {
-                            disp_path
-                        };
+                        let disp = truncate_with_ellipsis(&disp_path, 55);
                         println!("│  • Storage Directory: {:<55} │", disp);
                         println!(
                             "└──────────────────────────────────────────────────────────────────────────────┘"

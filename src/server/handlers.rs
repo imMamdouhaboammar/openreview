@@ -18,6 +18,20 @@ use crate::server::state::AppState;
 use crate::workflow::WorkflowParams;
 use crate::workflow::command::{WorkflowMode, parse_bot_command};
 
+/// Contain workflow panics so the surrounding job task can persist Failed
+/// and decrement active-workflow metrics through its existing error path.
+async fn run_workflow_catching_panics<F, T>(future: F) -> Result<T, AppError>
+where
+    F: std::future::Future<Output = Result<T, AppError>> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(future).await.map_err(|error| {
+        AppError::Internal(format!(
+            "Workflow execution terminated unexpectedly: {error}"
+        ))
+    })?
+}
+
 pub async fn webhook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -163,7 +177,11 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match coordinator.execute_bot_workflow(params).await {
+                    match run_workflow_catching_panics(async move {
+                        coordinator.execute_bot_workflow(params).await
+                    })
+                    .await
+                    {
                         Ok(res) => {
                             if res.success {
                                 persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
@@ -300,7 +318,11 @@ pub async fn webhook_handler(
                         }],
                     };
 
-                    match coordinator.execute_bot_workflow(params).await {
+                    match run_workflow_catching_panics(async move {
+                        coordinator.execute_bot_workflow(params).await
+                    })
+                    .await
+                    {
                         Ok(res) => {
                             if res.success {
                                 persist_job_status(&jobs, &job_id, JobStatus::Completed, None)
@@ -607,4 +629,55 @@ pub async fn root_handler(State(state): State<AppState>) -> Html<String> {
     );
 
     Html(html)
+}
+
+#[cfg(test)]
+mod workflow_panic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unexpected_workflow_panic_can_persist_a_failed_job() {
+        let jobs = crate::jobs::JobManager::new(1);
+        let job = jobs
+            .create_job(
+                "",
+                "issue_comment",
+                "owner/repo",
+                1,
+                Some(10),
+                "actor",
+                WorkflowMode::Review,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(persist_job_status(&jobs, &job.id, JobStatus::Running, None).await);
+
+        let result = run_workflow_catching_panics(async {
+            panic!("intentional isolated task panic");
+            #[allow(unreachable_code)]
+            Ok::<(), AppError>(())
+        })
+        .await;
+        let error = result.expect_err("panicking workflow must return an error to the job handler");
+        assert!(format!("{error}").contains("Workflow execution terminated unexpectedly"));
+
+        assert!(
+            persist_job_status(&jobs, &job.id, JobStatus::Failed, Some(error.to_string())).await
+        );
+        let final_job = jobs.get_job(&job.id).await.unwrap();
+        assert_eq!(final_job.status, JobStatus::Failed);
+        assert!(
+            final_job
+                .error_message
+                .unwrap()
+                .contains("terminated unexpectedly")
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_workflow_result_is_preserved() {
+        let result = run_workflow_catching_panics(async { Ok::<u8, AppError>(7) }).await;
+        assert_eq!(result.unwrap(), 7);
+    }
 }

@@ -195,11 +195,7 @@ impl DomPruner {
             // Extract plain text snippet
             let clean_inner = STRIP_TAGS_RE.replace_all(inner, " ").trim().to_string();
 
-            let display_text = if clean_inner.len() > 80 {
-                format!("{}...", &clean_inner[..77])
-            } else {
-                clean_inner
-            };
+            let display_text = crate::e2e::truncate_with_ellipsis(&clean_inner, 80);
 
             if is_interactive || !display_text.is_empty() {
                 elements.push(SemanticElement {
@@ -283,6 +279,17 @@ mod tests {
         let input = tree.iter().find(|e| e.tag == "input").unwrap();
         assert_eq!(input.placeholder.as_deref(), Some("Enter your email"));
         assert_eq!(input.value.as_deref(), Some("user@example.com"));
+    }
+
+    #[test]
+    fn unicode_character_at_truncation_boundary_does_not_panic() {
+        let pruner = DomPruner::default();
+        let html = format!("<h1>{}é{}</h1>", "a".repeat(76), "b".repeat(8));
+        let tree = pruner.extract_semantic_tree(&html);
+        assert_eq!(tree.len(), 1);
+        assert!(tree[0].text.ends_with("..."));
+        assert!(tree[0].text.is_char_boundary(tree[0].text.len()));
+        assert!(tree[0].text.len() <= 80);
     }
 
     #[test]

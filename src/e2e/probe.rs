@@ -86,6 +86,7 @@ impl E2eProbePolicy {
             if names.next().is_none_or(str::is_empty)
                 || names.next().is_none_or(str::is_empty)
                 || names.next().is_some()
+                || repo.chars().any(char::is_whitespace)
             {
                 return Err(AppError::Config(
                     "E2E_ALLOWED_PREVIEWS must use exact owner/repo keys".into(),
@@ -236,6 +237,16 @@ fn is_explicit_loopback_origin(url: &Url) -> bool {
 }
 
 fn is_public_address(ip: IpAddr) -> bool {
+    // DNS64 may encode an IPv4 destination in the well-known NAT64 prefix.
+    // Apply the same policy to that destination while allowing public IPv4.
+    if let IpAddr::V6(address) = ip {
+        let octets = address.octets();
+        if octets[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
+            return is_public_address(IpAddr::V4(std::net::Ipv4Addr::new(
+                octets[12], octets[13], octets[14], octets[15],
+            )));
+        }
+    }
     !NON_PUBLIC_NETWORKS
         .iter()
         .any(|network| network.contains(&ip))
@@ -244,6 +255,37 @@ fn is_public_address(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nat64_addresses_preserve_embedded_ipv4_policy() {
+        for address in [
+            "64:ff9b::a00:1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::c0a8:1",
+            "64:ff9b::c000:201",
+        ] {
+            assert!(!is_public_address(address.parse().unwrap()), "{address}");
+        }
+        assert!(is_public_address("64:ff9b::808:808".parse().unwrap()));
+    }
+
+    #[test]
+    fn repository_policy_rejects_whitespace_in_keys() {
+        for repo in [
+            "owner/repo ",
+            " owner/repo",
+            "own er/repo",
+            "owner/re\tpo",
+            "owner/repo\u{a0}",
+        ] {
+            let config = serde_json::json!({repo: [{"origin": "https://preview.example.org"}]});
+            assert!(
+                E2eProbePolicy::from_json(&config.to_string()).is_err(),
+                "{repo}"
+            );
+        }
+    }
 
     #[test]
     fn rejects_unscoped_or_untrusted_preview_configuration() {

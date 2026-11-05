@@ -6,6 +6,7 @@ pub mod pruner;
 pub mod replay;
 pub mod security;
 pub mod settlement;
+pub mod text;
 
 pub use actions::{ActionEngine, ActionResult, E2eAction, Locator};
 pub use finder::{E2eErrorFinder, E2eFinding, FindingSeverity};
@@ -14,6 +15,7 @@ pub use pruner::{DomPruner, SemanticElement};
 pub use replay::{RecordedStep, ReplayAnchor, ReplayEngine, ReplayManifest};
 pub use security::SecuritySanitizer;
 pub use settlement::{SettlementConfig, SettlementOracle};
+pub use text::truncate_with_ellipsis;
 
 use std::path::PathBuf;
 
