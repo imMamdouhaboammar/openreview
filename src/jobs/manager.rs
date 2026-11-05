@@ -126,8 +126,10 @@ impl JobManager {
     }
 
     fn prune(state: &mut StoredState) {
-        let cutoff = Utc::now() - Duration::days(7);
-        let review_cutoff = Utc::now() - Duration::hours(24);
+        let now = Utc::now();
+        let cutoff = now - Duration::days(7);
+        let review_cutoff = now - Duration::hours(24);
+        Self::clamp_review_timestamps(state, now);
         state
             .review_reservations
             .retain(|entry| entry.admitted_at > review_cutoff);
@@ -160,6 +162,19 @@ impl JobManager {
                 state.jobs.remove(&id);
             }
         }
+    }
+
+    fn clamp_review_timestamps(state: &mut StoredState, now: DateTime<Utc>) -> bool {
+        let mut changed = false;
+        for entry in &mut state.review_reservations {
+            if entry.admitted_at > now {
+                // Keep the reservation charged, but bound its lifetime after a
+                // backward clock correction. Persist this once, even on denial.
+                entry.admitted_at = now;
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub async fn is_delivery_processed(&self, delivery_id: &str) -> bool {
@@ -224,6 +239,13 @@ impl JobManager {
             return Ok(None);
         }
         let now = Utc::now();
+        let before_clock_correction = guard.clone();
+        if Self::clamp_review_timestamps(&mut guard, now)
+            && let Err(error) = self.save(&guard)
+        {
+            *guard = before_clock_correction;
+            return Err(error);
+        }
         if mode == WorkflowMode::Review
             && let Some(limits) = review_limits
         {
@@ -235,9 +257,7 @@ impl JobManager {
                 .collect::<Vec<_>>();
             if recent
                 .iter()
-                .filter(|job| {
-                    job.actor.eq_ignore_ascii_case(actor) && job.installation_id == installation_id
-                })
+                .filter(|job| job.actor.eq_ignore_ascii_case(actor))
                 .count()
                 >= limits.actor_per_day
             {
@@ -247,10 +267,7 @@ impl JobManager {
             }
             if recent
                 .iter()
-                .filter(|job| {
-                    job.repo_full_name.eq_ignore_ascii_case(repo_full_name)
-                        && job.installation_id == installation_id
-                })
+                .filter(|job| job.repo_full_name.eq_ignore_ascii_case(repo_full_name))
                 .count()
                 >= limits.repo_per_day
             {
@@ -527,6 +544,118 @@ mod tests {
             "quota must be atomic across unique webhook deliveries"
         );
         assert_eq!(manager.list_jobs().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn actor_and_repository_quotas_span_installations() {
+        for (actor_limit, repo_limit, second_actor, second_repo) in
+            [(1, 10, "ALICE", "org/another"), (10, 1, "bob", "ORG/REPO")]
+        {
+            let manager = JobManager::new(10);
+            let limits = ReviewQuotaLimits {
+                actor_per_day: actor_limit,
+                repo_per_day: repo_limit,
+                installation_per_day: 10,
+            };
+            manager
+                .create_job_with_limits(
+                    "first",
+                    "issue_comment",
+                    "org/repo",
+                    1,
+                    Some(100),
+                    "alice",
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let result = manager
+                .create_job_with_limits(
+                    "second",
+                    "issue_comment",
+                    second_repo,
+                    2,
+                    Some(200),
+                    second_actor,
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await;
+            assert!(
+                matches!(result, Err(AppError::Unauthorized(_))),
+                "changing installation must not reset actor or repository quota"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn future_reservations_are_clamped_and_persisted_even_when_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        let manager = JobManager::persistent(&path, 1).unwrap();
+        let limits = ReviewQuotaLimits {
+            actor_per_day: 1,
+            repo_per_day: 10,
+            installation_per_day: 10,
+        };
+        manager
+            .create_job_with_limits(
+                "first",
+                "issue_comment",
+                "org/repo",
+                1,
+                Some(100),
+                "alice",
+                WorkflowMode::Review,
+                Some(limits),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let mut state = manager.state.lock().await;
+            state.review_reservations[0].admitted_at = Utc::now() + Duration::days(7);
+            manager.save(&state).unwrap();
+        }
+        assert!(
+            manager
+                .create_job_with_limits(
+                    "second",
+                    "issue_comment",
+                    "org/repo",
+                    2,
+                    Some(100),
+                    "alice",
+                    WorkflowMode::Review,
+                    Some(limits),
+                )
+                .await
+                .is_err()
+        );
+        let state: StoredState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(state.review_reservations[0].admitted_at <= Utc::now());
+    }
+
+    #[test]
+    fn restart_clamps_future_reservations_without_dropping_quota() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        let state = StoredState {
+            review_reservations: vec![ReviewReservation {
+                actor: "alice".into(),
+                repo_full_name: "org/repo".into(),
+                installation_id: Some(100),
+                admitted_at: Utc::now() + Duration::days(7),
+            }],
+            ..StoredState::default()
+        };
+        persist_state(&path, &state).unwrap();
+        let _manager = JobManager::persistent(&path, 1).unwrap();
+        let state: StoredState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(state.review_reservations.len(), 1);
+        assert!(state.review_reservations[0].admitted_at <= Utc::now());
     }
 
     #[tokio::test]

@@ -28,6 +28,21 @@ static BEARER_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
 static CREDIT_CARD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{4}[ -]?){3}\d{4}\b").expect("valid credit card regex"));
 
+static EMAIL_ADDRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b")
+        .expect("valid email address regex")
+});
+
+static FORM_VALUE_ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s>]+)"#)
+        .expect("valid form value regex")
+});
+
+static TEXTAREA_CONTENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)(<textarea\b[^>]*>).*?(</textarea\s*>)")
+        .expect("valid textarea content regex")
+});
+
 static PASSWORD_ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(password|secret|passwd|token|auth_token)\s*=\s*["'][^"']+["']"#)
         .expect("valid password attribute regex")
@@ -79,12 +94,26 @@ impl SecuritySanitizer {
             .replace_all(&s, "[REDACTED_CREDIT_CARD]")
             .to_string();
 
-        // 5. Redact Password values in attributes
+        // 5. Prevent personal email addresses from leaving the observation.
+        s = EMAIL_ADDRESS_RE
+            .replace_all(&s, "[REDACTED_EMAIL]")
+            .to_string();
+
+        // 6. Drop form values before raw DOM snapshots or traces leave the process.
+        // This covers reversed attribute order, uppercase names and unquoted values.
+        s = FORM_VALUE_ATTR_RE
+            .replace_all(&s, "${1}\"[REDACTED_FORM_VALUE]\"")
+            .to_string();
+        s = TEXTAREA_CONTENT_RE
+            .replace_all(&s, "${1}[REDACTED_FORM_VALUE]${2}")
+            .to_string();
+
+        // 7. Redact Password values in attributes
         s = PASSWORD_ATTR_RE
             .replace_all(&s, "$1=\"[REDACTED_SECRET]\"")
             .to_string();
 
-        // 6. Redact Password inputs in DOM HTML
+        // 8. Redact Password inputs in DOM HTML
         s = SECURE_INPUT_RE
             .replace_all(&s, |caps: &regex::Captures| {
                 caps[0].replace(&caps[1], "••••••••")
@@ -103,6 +132,7 @@ impl SecuritySanitizer {
             || JWT_RE.is_match(text)
             || BEARER_HEADER_RE.is_match(text)
             || CREDIT_CARD_RE.is_match(text)
+            || EMAIL_ADDRESS_RE.is_match(text)
     }
 }
 
@@ -156,6 +186,36 @@ mod tests {
         let clean = sanitizer.sanitize(&raw);
         assert!(!clean.contains(&dummy_pass));
         assert!(clean.contains("••••••••"));
+    }
+
+    #[test]
+    fn raw_dom_form_values_are_redacted_independent_of_attribute_order() {
+        let html = r#"
+            <input value="TEST_ONLY_REVERSED_PASSWORD" type="password">
+            <input TYPE='text' VALUE='TEST_ONLY_UPPERCASE_VALUE'>
+            <input value=TEST_ONLY_UNQUOTED_VALUE type=hidden>
+            <textarea name="notes">TEST_ONLY_TEXTAREA_CONTENT</textarea>
+            <button data-testid="confirm">Confirm</button>
+        "#;
+        let clean = SecuritySanitizer::new().sanitize(html);
+        for marker in [
+            "TEST_ONLY_REVERSED_PASSWORD",
+            "TEST_ONLY_UPPERCASE_VALUE",
+            "TEST_ONLY_UNQUOTED_VALUE",
+            "TEST_ONLY_TEXTAREA_CONTENT",
+        ] {
+            assert!(!clean.contains(marker), "raw DOM retained {marker}");
+        }
+        assert!(clean.contains("data-testid=\"confirm\""));
+        assert!(clean.contains("Confirm"));
+    }
+
+    #[test]
+    fn test_sanitizes_personal_email_addresses() {
+        let sanitizer = SecuritySanitizer::new();
+        let output = sanitizer.sanitize("Contact person@example.org before release");
+        assert_eq!(output, "Contact [REDACTED_EMAIL] before release");
+        assert!(sanitizer.contains_unredacted_secrets("person@example.org"));
     }
 
     #[test]

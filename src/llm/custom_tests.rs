@@ -443,3 +443,43 @@ async fn custom_responses_does_not_follow_redirects_with_credentials() {
     );
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn provider_http_deadline_cancels_a_stalled_response_body() {
+    use super::http::HttpDeadlines;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    });
+
+    let deadlines = HttpDeadlines {
+        connect: Duration::from_millis(50),
+        request: Duration::from_millis(70),
+    };
+    let client = deadlines
+        .client(reqwest::header::HeaderMap::new(), true)
+        .unwrap();
+    let error = client
+        .get(format!("http://{address}/slow"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap_err();
+    assert!(
+        error.is_timeout(),
+        "stalled response body must time out: {error}"
+    );
+    server.await.unwrap();
+}

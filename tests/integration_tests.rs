@@ -37,6 +37,7 @@ fn create_test_config() -> Config {
         allow_public_reviews: false,
         review_quota: Default::default(),
         bot_username: "openreview".to_string(),
+        e2e_probe_policy: Default::default(),
         llm_provider: "anthropic".to_string(),
         model_name: "claude-3-7-sonnet-20250219".to_string(),
         anthropic_api_key: Some("dummy-key".to_string()),
@@ -50,7 +51,8 @@ fn create_test_config() -> Config {
         ollama_base_url: None,
         sandbox_driver: "local".to_string(),
         job_api_token: Some("test-secret-with-thirty-two-chars-long".to_string()),
-        max_concurrent_jobs: 10,
+        max_concurrent_jobs: 1,
+        max_job_duration_secs: 1800,
         sandbox_workspace_dir: "/tmp/test-openreview-sandbox-workspaces".into(),
         host: "127.0.0.1".to_string(),
         port: 3000,
@@ -66,6 +68,25 @@ fn explicit_invalid_job_concurrency_is_not_silently_defaulted() {
         .unwrap();
     assert!(!output.status.success(), "invalid limit must fail startup");
     assert!(String::from_utf8_lossy(&output.stderr).contains("MAX_CONCURRENT_JOBS"));
+}
+
+#[test]
+fn explicit_invalid_job_deadline_is_rejected_before_startup() {
+    for invalid in ["0", "not-a-number", "86401"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+            .arg("verify-config")
+            .env("MAX_JOB_DURATION_SECS", invalid)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "invalid deadline {invalid} must fail startup"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("MAX_JOB_DURATION_SECS"),
+            "invalid deadline should identify its variable"
+        );
+    }
 }
 
 #[test]
@@ -132,6 +153,7 @@ fn sign_payload(secret: &str, body: &[u8]) -> String {
 
 // Mock LLM for integration testing
 struct MockLlm {
+    calls: std::sync::atomic::AtomicUsize,
     responses: std::sync::Mutex<Vec<LlmResponse>>,
 }
 
@@ -139,6 +161,7 @@ impl MockLlm {
     fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
             responses: std::sync::Mutex::new(responses),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -151,6 +174,7 @@ impl LlmProvider for MockLlm {
         _messages: &[ChatMessage],
         _tools: &[ToolDefinition],
     ) -> openreview::error::Result<LlmResponse> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut queue = self.responses.lock().unwrap();
         if !queue.is_empty() {
             Ok(queue.remove(0))
@@ -167,6 +191,112 @@ impl LlmProvider for MockLlm {
     fn model_name(&self) -> &str {
         "mock-model"
     }
+}
+
+#[tokio::test]
+async fn agent_e2e_tool_never_forwards_raw_form_values_to_provider() {
+    use openreview::llm::types::MessageRole;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct CaptureLlm {
+        target: String,
+        calls: std::sync::Mutex<usize>,
+        observations: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for CaptureLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls == 1 {
+                Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: "probe-test".to_string(),
+                        name: "e2eFindErrors".to_string(),
+                        arguments: json!({"url": self.target}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                })
+            } else {
+                self.observations.lock().unwrap().extend(
+                    messages
+                        .iter()
+                        .filter(|message| message.role == MessageRole::Tool)
+                        .map(|message| message.content.clone()),
+                );
+                Ok(LlmResponse {
+                    content: Some("Review complete".to_string()),
+                    tool_calls: vec![],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                })
+            }
+        }
+
+        fn model_name(&self) -> &str {
+            "capture-provider-fixture"
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 2048];
+        let _ = stream.read(&mut request).await;
+        let body = r#"<input type="password" value="TEST_ONLY_PROVIDER_PASSWORD" name="password" /><input type="email" value="TEST_ONLY_PROVIDER_EMAIL" name="email" />"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let llm = CaptureLlm {
+        target: format!("http://{address}/"),
+        calls: std::sync::Mutex::new(0),
+        observations: observations.clone(),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    )
+    .with_e2e_probe_policy(openreview::e2e::probe::E2eProbePolicy::from_json(
+        &json!({"owner/repo": [{"origin": format!("http://{address}"), "allow_private": true}]}).to_string(),
+    ).unwrap());
+    let _ = runner.run(vec![]).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("approved fixture should receive the probe")
+        .unwrap();
+
+    let observed = observations.lock().unwrap().join("\n");
+    assert!(
+        observed.contains("SEMANTIC OBSERVATION TREE"),
+        "provider fixture did not receive the relevant tool output"
+    );
+    assert!(!observed.contains("TEST_ONLY_PROVIDER_PASSWORD"));
+    assert!(!observed.contains("TEST_ONLY_PROVIDER_EMAIL"));
+    assert!(observed.contains("password"));
 }
 
 #[tokio::test]
@@ -1130,6 +1260,110 @@ fn test_verification_report_markdown_generation() {
 }
 
 #[tokio::test]
+async fn review_e2e_probe_rejects_unapproved_destination_before_network_access() {
+    use openreview::llm::types::MessageRole;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    struct ProbeLlm {
+        url: String,
+        calls: AtomicUsize,
+        observed: Arc<std::sync::Mutex<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProbeLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: "e2e-security-probe".into(),
+                        name: "e2eFindErrors".into(),
+                        arguments: json!({"url": self.url}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                });
+            }
+            let result = messages
+                .iter()
+                .find(|message| message.role == MessageRole::Tool)
+                .expect("tool response should reach the model");
+            *self.observed.lock().unwrap() = result.content.clone();
+            Ok(LlmResponse {
+                content: Some("Review completed with no network probe".into()),
+                tool_calls: vec![],
+                input_tokens: 1,
+                output_tokens: 1,
+            })
+        }
+
+        fn model_name(&self) -> &str {
+            "e2e-policy-regression"
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let connected = Arc::new(AtomicBool::new(false));
+    let connected_server = connected.clone();
+    let server = tokio::spawn(async move {
+        if let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await
+        {
+            connected_server.store(true, Ordering::SeqCst);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .await;
+        }
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let observed = Arc::new(std::sync::Mutex::new(String::new()));
+    let llm = ProbeLlm {
+        url,
+        calls: AtomicUsize::new(0),
+        observed: observed.clone(),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+    let result = runner.run(vec![]).await.unwrap();
+    server.abort();
+
+    assert!(result.success);
+    assert!(
+        observed
+            .lock()
+            .unwrap()
+            .contains("Security Error: E2E destination not authorized"),
+        "the agent must receive an explicit authorization denial before any request"
+    );
+    assert!(
+        !connected.load(Ordering::SeqCst),
+        "the unapproved destination must never receive a connection"
+    );
+}
+
+#[tokio::test]
 async fn test_project_verifier_detects_clean_empty_dir() {
     let temp = tempfile::tempdir().unwrap();
     let sandbox = LocalSandbox::new(temp, "owner/repo".to_string(), String::new());
@@ -1149,10 +1383,10 @@ async fn signed_public_review_commands_are_rejected_before_job_creation() {
     config.review_allowed_actors.clear();
     config.allow_public_reviews = false;
     let secret = config.github_app_webhook_secret.clone();
-    let llm: Arc<dyn LlmProvider> = Arc::new(MockLlm::new(vec![]));
+    let llm = Arc::new(MockLlm::new(vec![]));
     let coordinator = Arc::new(WorkflowCoordinator::new(
         config.clone(),
-        llm,
+        llm.clone(),
         Arc::new(LocalSandboxDriver),
     ));
     let jobs = Arc::new(JobManager::default());
@@ -1245,6 +1479,11 @@ async fn signed_public_review_commands_are_rejected_before_job_creation() {
     let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(decoded["reason"], "review_actor_not_approved");
 
+    assert_eq!(
+        llm.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "rejected requests must not reach the provider"
+    );
     assert!(
         jobs.list_jobs().await.is_empty(),
         "disallowed reviewers must not create payable jobs"

@@ -270,7 +270,8 @@ impl WorkflowCoordinator {
             params.dry_run,
             &skills,
             pr_context.as_ref(),
-        );
+        )
+        .with_e2e_probe_policy(self.config.e2e_probe_policy.clone());
 
         let mut agent_result = match runner.run(initial_messages).await {
             Ok(res) => res,

@@ -16,6 +16,7 @@ pub struct Config {
     pub allow_public_reviews: bool,
     pub review_quota: ReviewQuotaLimits,
     pub bot_username: String,
+    pub e2e_probe_policy: crate::e2e::probe::E2eProbePolicy,
 
     pub llm_provider: String,
     pub model_name: String,
@@ -32,6 +33,7 @@ pub struct Config {
     pub sandbox_driver: String,
     pub job_api_token: Option<String>,
     pub max_concurrent_jobs: usize,
+    pub max_job_duration_secs: u64,
     pub sandbox_workspace_dir: String,
     pub host: String,
     pub port: u16,
@@ -122,6 +124,14 @@ impl Config {
             installation_per_day: read_review_quota("REVIEW_INSTALLATION_DAILY_LIMIT", 30)?,
         };
         let bot_username = env::var("BOT_USERNAME").unwrap_or_else(|_| "openreview".to_string());
+        let e2e_preview_config = env::var("E2E_ALLOWED_PREVIEWS").unwrap_or_default();
+        let e2e_probe_policy = crate::e2e::probe::E2eProbePolicy::from_json(
+            if e2e_preview_config.trim().is_empty() {
+                "{}"
+            } else {
+                &e2e_preview_config
+            },
+        )?;
 
         let llm_provider = env::var("LLM_PROVIDER")
             .unwrap_or_else(|_| "anthropic".to_string())
@@ -174,6 +184,24 @@ impl Config {
                 )));
             }
         };
+        let max_job_duration_secs = match env::var("MAX_JOB_DURATION_SECS") {
+            Ok(value) => value.parse::<u64>().map_err(|_| {
+                AppError::Config(
+                    "MAX_JOB_DURATION_SECS must be an integer between 1 and 86400".into(),
+                )
+            })?,
+            Err(env::VarError::NotPresent) => 1800,
+            Err(err) => {
+                return Err(AppError::Config(format!(
+                    "Cannot read MAX_JOB_DURATION_SECS: {err}"
+                )));
+            }
+        };
+        if !(1..=86_400).contains(&max_job_duration_secs) {
+            return Err(AppError::Config(
+                "MAX_JOB_DURATION_SECS must be between 1 and 86400".into(),
+            ));
+        }
         let sandbox_workspace_dir = env::var("SANDBOX_WORKSPACE_DIR")
             .unwrap_or_else(|_| "/srv/openreview/workspaces".into());
 
@@ -194,6 +222,7 @@ impl Config {
             allow_public_reviews,
             review_quota,
             bot_username,
+            e2e_probe_policy,
             llm_provider,
             model_name,
             anthropic_api_key,
@@ -208,6 +237,7 @@ impl Config {
             sandbox_driver,
             job_api_token,
             max_concurrent_jobs,
+            max_job_duration_secs,
             sandbox_workspace_dir,
             host,
             port,
