@@ -1,5 +1,6 @@
 use crate::agent::prompt::assemble_system_prompt;
 use crate::agent::tools::{get_standard_tools, truncate_tool_output};
+use crate::e2e::probe::{E2eProbePolicy, ProbeError};
 use crate::error::{AppError, Result};
 use crate::github::client::GitHubClient;
 use crate::llm::traits::LlmProvider;
@@ -46,6 +47,7 @@ pub struct AgentRunner<'a> {
     dry_run: bool,
     skills: &'a [SkillMetadata],
     pr_context: Option<&'a PullRequestContext>,
+    e2e_probe_policy: E2eProbePolicy,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -71,7 +73,13 @@ impl<'a> AgentRunner<'a> {
             dry_run,
             skills,
             pr_context,
+            e2e_probe_policy: E2eProbePolicy::default(),
         }
+    }
+
+    pub fn with_e2e_probe_policy(mut self, policy: E2eProbePolicy) -> Self {
+        self.e2e_probe_policy = policy;
+        self
     }
 
     pub async fn run(&self, initial_messages: Vec<ChatMessage>) -> Result<AgentRunResult> {
@@ -365,13 +373,11 @@ impl<'a> AgentRunner<'a> {
             }
             "e2eFindErrors" => {
                 let url = call.arguments["url"].as_str().unwrap_or_default();
-                let subsystem = crate::e2e::E2eSubsystem::new();
-                let client = reqwest::Client::new();
-                match client.get(url).send().await {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let html = resp.text().await.unwrap_or_default();
-                        let tree = subsystem.pruner.render_pruned_tree(&html);
+                match self.e2e_probe_policy.fetch(self.repo_full_name, url).await {
+                    Ok(page) => {
+                        let subsystem = crate::e2e::E2eSubsystem::new();
+                        let status = page.status;
+                        let tree = subsystem.pruner.render_pruned_tree(&page.html);
                         if status.is_client_error() || status.is_server_error() {
                             format!(
                                 "E2E Probing Result: HTTP {status} Error detected on {url}!\n\nPruned Semantic Tree:\n{tree}"
@@ -382,7 +388,10 @@ impl<'a> AgentRunner<'a> {
                             )
                         }
                     }
-                    Err(e) => format!("E2E Probing Error: Failed to connect to '{url}': {e}"),
+                    Err(ProbeError::Unauthorized) => {
+                        "Security Error: E2E destination not authorized".into()
+                    }
+                    Err(error) => format!("E2E Probing Error: {error}"),
                 }
             }
             "reply" => {

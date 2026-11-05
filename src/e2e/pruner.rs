@@ -202,10 +202,8 @@ impl DomPruner {
                 && !clean_inner.is_empty()
             {
                 "[REDACTED_FORM_VALUE]".to_string()
-            } else if clean_inner.len() > 80 {
-                format!("{}...", &clean_inner[..77])
             } else {
-                clean_inner
+                crate::e2e::truncate_with_ellipsis(&clean_inner, 80)
             };
 
             if is_interactive || !display_text.is_empty() {
@@ -365,6 +363,17 @@ mod tests {
         assert!(!serialized.contains(&dummy_key));
         assert!(serialized.contains("[REDACTED_EMAIL]"));
         assert!(serialized.contains("[REDACTED_API_KEY]"));
+    }
+
+    #[test]
+    fn unicode_character_at_truncation_boundary_does_not_panic() {
+        let pruner = DomPruner::default();
+        let html = format!("<h1>{}é{}</h1>", "a".repeat(76), "b".repeat(8));
+        let tree = pruner.extract_semantic_tree(&html);
+        assert_eq!(tree.len(), 1);
+        assert!(tree[0].text.ends_with("..."));
+        assert!(tree[0].text.is_char_boundary(tree[0].text.len()));
+        assert!(tree[0].text.len() <= 80);
     }
 
     #[test]

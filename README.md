@@ -397,6 +397,18 @@ Traditional E2E testing tools suffer from brittle replay caches, secret leaks, t
 
 **E2E observation privacy:** Raw form values are never retained in extracted semantic observations, including ordinary text inputs, hidden values, option attributes, and textarea contents. Reports replace `Fill`, `FillSecret`, and `Select` action values with `[REDACTED_FORM_VALUE]`. Recognizable API keys, authentication tokens, payment-card numbers, and email addresses are also masked in metadata and rendered output. UI roles, ordinary labels, and test IDs remain available after sensitive-pattern sanitization. Reported reproduction steps use placeholders for input values, so any replay requires operator-supplied test data
 
+### Agent preview network permissions
+
+The `e2eFindErrors` agent tool denies every network probe by default. Operators must approve each preview origin for a specific GitHub repository using `E2E_ALLOWED_PREVIEWS` (in the server environment, Compose environment, or the composite Action input `e2e_allowed_previews`)
+
+```bash
+E2E_ALLOWED_PREVIEWS='{"my-org/my-repo":[{"origin":"https://pr-123.preview.example.com"}]}'
+```
+
+Only exact repository and origin matches are accepted. Approved public destinations must use HTTPS. The agent checks DNS addresses against private, loopback, link-local, metadata, and reserved ranges, pins approved DNS to the connection, disables environment proxies and redirects, and limits the response to 1 MiB within a 15-second request timeout. A destination that resolves to any restricted address is rejected
+
+For an operator-controlled local test only, explicitly approve the loopback origin with `{"origin":"http://127.0.0.1:3000","allow_private":true}` under the corresponding `owner/repo` key. This exception permits loopback addresses only, never other private networks. A blank environment variable retains the default-deny policy. This authorization applies to the **agent tool**; the separately invoked `openreview e2e` CLI is not covered by this setting
+
 ### CLI Usage
 
 ```bash
