@@ -168,6 +168,112 @@ impl LlmProvider for MockLlm {
 }
 
 #[tokio::test]
+async fn agent_e2e_tool_never_forwards_raw_form_values_to_provider() {
+    use openreview::llm::types::MessageRole;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct CaptureLlm {
+        target: String,
+        calls: std::sync::Mutex<usize>,
+        observations: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for CaptureLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls == 1 {
+                Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: "probe-test".to_string(),
+                        name: "e2eFindErrors".to_string(),
+                        arguments: json!({"url": self.target}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                })
+            } else {
+                self.observations.lock().unwrap().extend(
+                    messages
+                        .iter()
+                        .filter(|message| message.role == MessageRole::Tool)
+                        .map(|message| message.content.clone()),
+                );
+                Ok(LlmResponse {
+                    content: Some("Review complete".to_string()),
+                    tool_calls: vec![],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                })
+            }
+        }
+
+        fn model_name(&self) -> &str {
+            "capture-provider-fixture"
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 2048];
+        let _ = stream.read(&mut request).await;
+        let body = r#"<input type="password" value="TEST_ONLY_PROVIDER_PASSWORD" name="password" /><input type="email" value="TEST_ONLY_PROVIDER_EMAIL" name="email" />"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let llm = CaptureLlm {
+        target: format!("http://{address}/"),
+        calls: std::sync::Mutex::new(0),
+        observations: observations.clone(),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    )
+    .with_e2e_probe_policy(openreview::e2e::probe::E2eProbePolicy::from_json(
+        &json!({"owner/repo": [{"origin": format!("http://{address}"), "allow_private": true}]}).to_string(),
+    ).unwrap());
+    let _ = runner.run(vec![]).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("approved fixture should receive the probe")
+        .unwrap();
+
+    let observed = observations.lock().unwrap().join("\n");
+    assert!(
+        observed.contains("SEMANTIC OBSERVATION TREE"),
+        "provider fixture did not receive the relevant tool output"
+    );
+    assert!(!observed.contains("TEST_ONLY_PROVIDER_PASSWORD"));
+    assert!(!observed.contains("TEST_ONLY_PROVIDER_EMAIL"));
+    assert!(observed.contains("password"));
+}
+
+#[tokio::test]
 async fn test_health_endpoint() {
     let config = create_test_config();
     let llm: Arc<dyn LlmProvider> = Arc::new(MockLlm::new(vec![]));
