@@ -29,6 +29,7 @@ pub struct Config {
     pub sandbox_driver: String,
     pub job_api_token: Option<String>,
     pub max_concurrent_jobs: usize,
+    pub max_job_duration_secs: u64,
     pub sandbox_workspace_dir: String,
     pub host: String,
     pub port: u16,
@@ -126,6 +127,24 @@ impl Config {
                 )));
             }
         };
+        let max_job_duration_secs = match env::var("MAX_JOB_DURATION_SECS") {
+            Ok(value) => value.parse::<u64>().map_err(|_| {
+                AppError::Config(
+                    "MAX_JOB_DURATION_SECS must be an integer between 1 and 86400".into(),
+                )
+            })?,
+            Err(env::VarError::NotPresent) => 1800,
+            Err(err) => {
+                return Err(AppError::Config(format!(
+                    "Cannot read MAX_JOB_DURATION_SECS: {err}"
+                )));
+            }
+        };
+        if !(1..=86_400).contains(&max_job_duration_secs) {
+            return Err(AppError::Config(
+                "MAX_JOB_DURATION_SECS must be between 1 and 86400".into(),
+            ));
+        }
         let sandbox_workspace_dir = env::var("SANDBOX_WORKSPACE_DIR")
             .unwrap_or_else(|_| "/srv/openreview/workspaces".into());
 
@@ -158,6 +177,7 @@ impl Config {
             sandbox_driver,
             job_api_token,
             max_concurrent_jobs,
+            max_job_duration_secs,
             sandbox_workspace_dir,
             host,
             port,

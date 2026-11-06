@@ -48,7 +48,8 @@ fn create_test_config() -> Config {
         ollama_base_url: None,
         sandbox_driver: "local".to_string(),
         job_api_token: Some("test-secret-with-thirty-two-chars-long".to_string()),
-        max_concurrent_jobs: 10,
+        max_concurrent_jobs: 1,
+        max_job_duration_secs: 1800,
         sandbox_workspace_dir: "/tmp/test-openreview-sandbox-workspaces".into(),
         host: "127.0.0.1".to_string(),
         port: 3000,
@@ -64,6 +65,25 @@ fn explicit_invalid_job_concurrency_is_not_silently_defaulted() {
         .unwrap();
     assert!(!output.status.success(), "invalid limit must fail startup");
     assert!(String::from_utf8_lossy(&output.stderr).contains("MAX_CONCURRENT_JOBS"));
+}
+
+#[test]
+fn explicit_invalid_job_deadline_is_rejected_before_startup() {
+    for invalid in ["0", "not-a-number", "86401"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+            .arg("verify-config")
+            .env("MAX_JOB_DURATION_SECS", invalid)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "invalid deadline {invalid} must fail startup"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("MAX_JOB_DURATION_SECS"),
+            "invalid deadline should identify its variable"
+        );
+    }
 }
 
 #[test]

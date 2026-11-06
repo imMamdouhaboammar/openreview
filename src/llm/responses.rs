@@ -24,11 +24,7 @@ impl OpenAiResponsesProvider {
             HeaderValue::from_str(&format!("Bearer {api_key}"))
                 .map_err(|error| AppError::Config(error.to_string()))?,
         );
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let client = crate::llm::http::HttpDeadlines::from_env()?.client(headers, true)?;
         let session_id = HeaderValue::from_str(&format!("ses_{}", uuid::Uuid::new_v4().simple()))
             .map_err(|error| AppError::Internal(error.to_string()))?;
         Ok(Self {

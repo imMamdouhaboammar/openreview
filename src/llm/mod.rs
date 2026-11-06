@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod gemini;
+pub mod http;
 pub mod openai;
 pub mod responses;
 pub mod traits;
@@ -160,6 +161,7 @@ mod tests {
             sandbox_driver: "docker".into(),
             job_api_token: None,
             max_concurrent_jobs: 1,
+            max_job_duration_secs: 1800,
             sandbox_workspace_dir: "/tmp/openreview-test".into(),
             host: "127.0.0.1".into(),
             port: 3000,
