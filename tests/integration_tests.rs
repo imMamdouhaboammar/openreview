@@ -34,6 +34,7 @@ fn create_test_config() -> Config {
         github_app_installation_id: Some(999),
         allowed_installation_ids: [8888].into_iter().collect(),
         bot_username: "openreview".to_string(),
+        e2e_probe_policy: Default::default(),
         llm_provider: "anthropic".to_string(),
         model_name: "claude-3-7-sonnet-20250219".to_string(),
         anthropic_api_key: Some("dummy-key".to_string()),
@@ -1124,6 +1125,110 @@ fn test_verification_report_markdown_generation() {
     let md = report.to_markdown();
     assert!(md.contains("❌ **Linter**"));
     assert!(md.contains("Automatic publishing blocked"));
+}
+
+#[tokio::test]
+async fn review_e2e_probe_rejects_unapproved_destination_before_network_access() {
+    use openreview::llm::types::MessageRole;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    struct ProbeLlm {
+        url: String,
+        calls: AtomicUsize,
+        observed: Arc<std::sync::Mutex<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProbeLlm {
+        async fn complete(
+            &self,
+            _system: &str,
+            messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+        ) -> openreview::error::Result<LlmResponse> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Ok(LlmResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: "e2e-security-probe".into(),
+                        name: "e2eFindErrors".into(),
+                        arguments: json!({"url": self.url}),
+                        thought_signature: None,
+                    }],
+                    input_tokens: 1,
+                    output_tokens: 1,
+                });
+            }
+            let result = messages
+                .iter()
+                .find(|message| message.role == MessageRole::Tool)
+                .expect("tool response should reach the model");
+            *self.observed.lock().unwrap() = result.content.clone();
+            Ok(LlmResponse {
+                content: Some("Review completed with no network probe".into()),
+                tool_calls: vec![],
+                input_tokens: 1,
+                output_tokens: 1,
+            })
+        }
+
+        fn model_name(&self) -> &str {
+            "e2e-policy-regression"
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let connected = Arc::new(AtomicBool::new(false));
+    let connected_server = connected.clone();
+    let server = tokio::spawn(async move {
+        if let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await
+        {
+            connected_server.store(true, Ordering::SeqCst);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .await;
+        }
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = LocalSandbox::new(temp, "owner/repo".into(), String::new());
+    let observed = Arc::new(std::sync::Mutex::new(String::new()));
+    let llm = ProbeLlm {
+        url,
+        calls: AtomicUsize::new(0),
+        observed: observed.clone(),
+    };
+    let runner = AgentRunner::new(
+        &sandbox,
+        None,
+        &llm,
+        "owner/repo",
+        1,
+        WorkflowMode::Review,
+        true,
+        &[],
+        None,
+    );
+    let result = runner.run(vec![]).await.unwrap();
+    server.abort();
+
+    assert!(result.success);
+    assert!(
+        observed
+            .lock()
+            .unwrap()
+            .contains("Security Error: E2E destination not authorized"),
+        "the agent must receive an explicit authorization denial before any request"
+    );
+    assert!(
+        !connected.load(Ordering::SeqCst),
+        "the unapproved destination must never receive a connection"
+    );
 }
 
 #[tokio::test]

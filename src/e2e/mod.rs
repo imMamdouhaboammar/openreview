@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod finder;
 pub mod normalizer;
+pub mod probe;
 pub mod pruner;
 pub mod replay;
 pub mod security;
