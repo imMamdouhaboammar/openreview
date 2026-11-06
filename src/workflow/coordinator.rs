@@ -64,6 +64,17 @@ impl WorkflowCoordinator {
                 ));
             }
         }
+        // Recheck before any provider or sandbox work. Webhook admission is
+        // checked when the job is queued, but this guard also protects direct
+        // coordinator calls carrying webhook context.
+        if params.from_webhook
+            && params.mode == WorkflowMode::Review
+            && !self.config.review_actor_allowed(&params.actor)
+        {
+            return Err(AppError::Unauthorized(
+                "Review actor has not been approved for paid execution".into(),
+            ));
+        }
         let token = if let Some(installation_id) = params.installation_id {
             info!(
                 "Acquiring installation token for installation {} on {}",

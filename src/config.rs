@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use crate::jobs::ReviewQuotaLimits;
 use std::collections::HashSet;
 use std::env;
 
@@ -11,6 +12,9 @@ pub struct Config {
     pub github_app_webhook_secret: String,
     pub github_app_installation_id: Option<u64>,
     pub allowed_installation_ids: HashSet<u64>,
+    pub review_allowed_actors: HashSet<String>,
+    pub allow_public_reviews: bool,
+    pub review_quota: ReviewQuotaLimits,
     pub bot_username: String,
     pub e2e_probe_policy: crate::e2e::probe::E2eProbePolicy,
 
@@ -33,6 +37,24 @@ pub struct Config {
     pub sandbox_workspace_dir: String,
     pub host: String,
     pub port: u16,
+}
+
+fn read_review_quota(name: &str, default: usize) -> Result<usize> {
+    let value = match env::var(name) {
+        Ok(raw) => raw.parse::<usize>().map_err(|_| {
+            AppError::Config(format!(
+                "{name} must be a positive integer between 1 and 10000"
+            ))
+        })?,
+        Err(env::VarError::NotPresent) => default,
+        Err(err) => return Err(AppError::Config(format!("Cannot read {name}: {err}"))),
+    };
+    if !(1..=10_000).contains(&value) {
+        return Err(AppError::Config(format!(
+            "{name} must be between 1 and 10000"
+        )));
+    }
+    Ok(value)
 }
 
 impl Config {
@@ -66,6 +88,41 @@ impl Config {
             }
         }
 
+        // Paid review permissions are operator-controlled. No commenter is
+        // authorized by default, even inside an approved installation.
+        let review_allowed_actors: HashSet<String> = env::var("REVIEW_ALLOWED_ACTORS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|actor| actor.trim().trim_start_matches('@').to_ascii_lowercase())
+            .filter(|actor| !actor.is_empty())
+            .collect();
+        for actor in &review_allowed_actors {
+            if actor.len() > 39
+                || actor.starts_with('-')
+                || actor.ends_with('-')
+                || !actor
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err(AppError::Config(
+                    "REVIEW_ALLOWED_ACTORS contains an invalid GitHub login".into(),
+                ));
+            }
+        }
+        let allow_public_reviews = match env::var("ALLOW_PUBLIC_REVIEWS").as_deref() {
+            Ok("true" | "1") => true,
+            Ok("false" | "0") | Err(env::VarError::NotPresent) => false,
+            _ => {
+                return Err(AppError::Config(
+                    "ALLOW_PUBLIC_REVIEWS must be true or false".into(),
+                ));
+            }
+        };
+        let review_quota = ReviewQuotaLimits {
+            actor_per_day: read_review_quota("REVIEW_ACTOR_DAILY_LIMIT", 2)?,
+            repo_per_day: read_review_quota("REVIEW_REPO_DAILY_LIMIT", 10)?,
+            installation_per_day: read_review_quota("REVIEW_INSTALLATION_DAILY_LIMIT", 30)?,
+        };
         let bot_username = env::var("BOT_USERNAME").unwrap_or_else(|_| "openreview".to_string());
         let e2e_preview_config = env::var("E2E_ALLOWED_PREVIEWS").unwrap_or_default();
         let e2e_probe_policy = crate::e2e::probe::E2eProbePolicy::from_json(
@@ -161,6 +218,9 @@ impl Config {
             github_app_webhook_secret,
             github_app_installation_id,
             allowed_installation_ids,
+            review_allowed_actors,
+            allow_public_reviews,
+            review_quota,
             bot_username,
             e2e_probe_policy,
             llm_provider,
@@ -182,6 +242,14 @@ impl Config {
             host,
             port,
         })
+    }
+
+    pub fn review_actor_allowed(&self, actor: &str) -> bool {
+        !actor.trim().is_empty()
+            && (self.allow_public_reviews
+                || self
+                    .review_allowed_actors
+                    .contains(&actor.to_ascii_lowercase()))
     }
 
     pub fn validate_github_credentials(&self) -> Result<()> {

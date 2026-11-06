@@ -33,6 +33,9 @@ fn create_test_config() -> Config {
         github_app_webhook_secret: "test-webhook-secret-xyz".to_string(),
         github_app_installation_id: Some(999),
         allowed_installation_ids: [8888].into_iter().collect(),
+        review_allowed_actors: ["developer".to_string()].into_iter().collect(),
+        allow_public_reviews: false,
+        review_quota: Default::default(),
         bot_username: "openreview".to_string(),
         e2e_probe_policy: Default::default(),
         llm_provider: "anthropic".to_string(),
@@ -150,6 +153,7 @@ fn sign_payload(secret: &str, body: &[u8]) -> String {
 
 // Mock LLM for integration testing
 struct MockLlm {
+    calls: std::sync::atomic::AtomicUsize,
     responses: std::sync::Mutex<Vec<LlmResponse>>,
 }
 
@@ -157,6 +161,7 @@ impl MockLlm {
     fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
             responses: std::sync::Mutex::new(responses),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -169,6 +174,7 @@ impl LlmProvider for MockLlm {
         _messages: &[ChatMessage],
         _tools: &[ToolDefinition],
     ) -> openreview::error::Result<LlmResponse> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut queue = self.responses.lock().unwrap();
         if !queue.is_empty() {
             Ok(queue.remove(0))
@@ -1369,4 +1375,145 @@ async fn test_project_verifier_detects_clean_empty_dir() {
         openreview::workflow::verification::VerificationOutcome::Unavailable
     );
     assert!(report.checks.is_empty());
+}
+
+#[tokio::test]
+async fn signed_public_review_commands_are_rejected_before_job_creation() {
+    let mut config = create_test_config();
+    config.review_allowed_actors.clear();
+    config.allow_public_reviews = false;
+    let secret = config.github_app_webhook_secret.clone();
+    let llm = Arc::new(MockLlm::new(vec![]));
+    let coordinator = Arc::new(WorkflowCoordinator::new(
+        config.clone(),
+        llm.clone(),
+        Arc::new(LocalSandboxDriver),
+    ));
+    let jobs = Arc::new(JobManager::default());
+    let metrics = Arc::new(Metrics::new());
+    let app = create_router(AppState {
+        config,
+        coordinator,
+        metrics: metrics.clone(),
+        jobs: jobs.clone(),
+    });
+    let payload = json!({
+        "action": "created",
+        "issue": {
+            "id": 10, "number": 55, "title": "Example",
+            "pull_request": {
+                "url": "https://api.github.com/repos/test/repo/pulls/55",
+                "html_url": "https://github.com/test/repo/pull/55"
+            }
+        },
+        "comment": {
+            "id": 200,
+            "body": "@openreview review",
+            "user": { "id": 10, "login": "untrusted-commenter" },
+            "html_url": "https://github.com/test/repo/pull/55#issuecomment-200"
+        },
+        "repository": {
+            "id": 100, "name": "repo", "full_name": "test/repo",
+            "owner": { "id": 1, "login": "test" }
+        },
+        "installation": { "id": 8888 }
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    let signature = sign_payload(&secret, &bytes);
+    for delivery in ["untrusted-a", "untrusted-b"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/github")
+                    .header("x-github-event", "issue_comment")
+                    .header("x-github-delivery", delivery)
+                    .header("x-hub-signature-256", signature.clone())
+                    .body(Body::from(bytes.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(decoded["reason"], "review_actor_not_approved");
+    }
+    let review_comment = json!({
+        "action": "created",
+        "pull_request": {
+            "id": 10, "number": 55, "title": "Example", "body": null,
+            "head": { "ref": "feature", "sha": "abc", "repo": null },
+            "base": { "ref": "main", "sha": "def", "repo": null },
+            "html_url": "https://github.com/test/repo/pull/55",
+            "user": { "id": 2, "login": "author" }
+        },
+        "comment": {
+            "id": 201, "body": "@openreview review",
+            "user": { "id": 10, "login": "untrusted-commenter" }
+        },
+        "repository": payload["repository"],
+        "installation": { "id": 8888 }
+    });
+    let review_bytes = serde_json::to_vec(&review_comment).unwrap();
+    let review_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/webhooks/github")
+                .header("x-github-event", "pull_request_review_comment")
+                .header("x-github-delivery", "untrusted-review-comment")
+                .header("x-hub-signature-256", sign_payload(&secret, &review_bytes))
+                .body(Body::from(review_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(review_response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(review_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(decoded["reason"], "review_actor_not_approved");
+
+    assert_eq!(
+        llm.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "rejected requests must not reach the provider"
+    );
+    assert!(
+        jobs.list_jobs().await.is_empty(),
+        "disallowed reviewers must not create payable jobs"
+    );
+    assert_eq!(
+        metrics
+            .reviews_rejected
+            .load(std::sync::atomic::Ordering::Relaxed),
+        3,
+        "all rejected signed comments should be counted without exposing actor identity"
+    );
+}
+
+#[test]
+fn invalid_review_admission_configuration_fails_before_startup() {
+    for (key, invalid) in [
+        ("REVIEW_ACTOR_DAILY_LIMIT", "0"),
+        ("REVIEW_REPO_DAILY_LIMIT", "not-a-number"),
+        ("REVIEW_INSTALLATION_DAILY_LIMIT", "10001"),
+        ("ALLOW_PUBLIC_REVIEWS", "maybe"),
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_openreview"))
+            .arg("verify-config")
+            .env(key, invalid)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "invalid {key}={invalid} must fail"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains(key));
+    }
 }
