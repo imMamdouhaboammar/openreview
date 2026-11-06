@@ -1,0 +1,46 @@
+{
+  "original_head_path": "M47 100C34 83 35 66 42 55c2-3 7 0 15 5-8-11-7-23 2-33 6-7 9 2 14 10 8 14 16 21 28 27 19-11 38-10 60-5 13-10 37-25 49-27 7-1 11 4 15 13l19 38c5 10-1 17-11 27 6 27 3 55-10 78-18 32-50 49-93 51-43 1-77-18-95-49-19-33-11-70 12-90Z",
+  "geometry": "Original Rovi head vector retained in all frontal poses. Artboard 320x470, torso x123..244, legs from y354, head translated (36,22).",
+  "palette": {
+    "paper": "#FAF7F0",
+    "ink": "#171717",
+    "white": "#FFFEFA",
+    "clay": "#CE7058",
+    "amber": "#E8BE70",
+    "sage": "#639781",
+    "mist": "#E4EBE5",
+    "peach": "#F3DDCE",
+    "shade": "#E9E2D7",
+    "deep": "#263C36",
+    "red": "#C76D5D",
+    "clayText": "#944B37",
+    "sageText": "#365E50"
+  },
+  "expressions": [
+    "neutral",
+    "curious",
+    "suspicious",
+    "concentrating",
+    "confused",
+    "concerned",
+    "relieved",
+    "happy",
+    "proud",
+    "sleepy"
+  ],
+  "poses": [
+    "standing",
+    "sitting",
+    "walking",
+    "inspecting",
+    "pointing-code",
+    "reading-pr",
+    "writing-note",
+    "investigating-bug",
+    "applying-patch",
+    "waiting-tests",
+    "celebrating",
+    "resting"
+  ],
+  "small_size": "Use the original square mark, or experimental rovi-small-mark.svg at 24px/32px; do not shrink a full-body character into a favicon."
+}

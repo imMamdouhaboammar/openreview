@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">OpenReview mascot, transparent background</title>
+  <g fill="#fff">
+    <path d="M47 100C34 83 35 66 42 55c2-3 7 0 15 5-8-11-7-23 2-33 6-7 9 2 14 10 8 14 16 21 28 27 19-11 38-10 60-5 13-10 37-25 49-27 7-1 11 4 15 13l19 38c5 10-1 17-11 27 6 27 3 55-10 78-18 32-50 49-93 51-43 1-77-18-95-49-19-33-11-70 12-90Z"/>
+  </g>
+  <g fill="#080808">
+    <path d="M207 47c-1 13-4 24-2 30 2 7 14 9 27 14 4 1 1-6-2-11l-14-31c-3-5-7-6-9-2Z"/>
+    <ellipse cx="82.4" cy="136.3" rx="9.1" ry="12.5" transform="rotate(15 82.4 136.3)"/>
+    <ellipse cx="160" cy="145" rx="6.6" ry="9" transform="rotate(18 160 145)"/>
+  </g>
+  <g fill="none" stroke="#080808" stroke-linecap="round">
+    <path d="M137 99c14-8 28-12 43-10" stroke-width="8"/>
+    <circle cx="164" cy="142" r="28" stroke-width="9.5"/>
+    <path d="m186 164 17 17" stroke-width="10"/>
+    <path d="M149 140c6-6 16-9 25-4" stroke-width="6"/>
+    <path d="m101 149 10 12 14-15" stroke-width="9.5" stroke-linejoin="round"/>
+    <path d="M137 199c11 1 21-4 28-13" stroke-width="7.8"/>
+  </g>
+</svg>
