@@ -36,8 +36,10 @@ static NON_PUBLIC_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
         "2001::/23",
         "2001:db8::/32",
         "2002::/16",
+        "3fff::/20",
         "fc00::/7",
         "fe80::/10",
+        "fec0::/10",
         "ff00::/8",
     ]
     .iter()
@@ -45,6 +47,7 @@ static NON_PUBLIC_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
     .collect()
 });
 
+/// Approved preview configuration entry allowing specific origins.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovedPreview {
@@ -53,16 +56,19 @@ pub struct ApprovedPreview {
     pub allow_private: bool,
 }
 
+/// Enforces repository-scoped egress policy for E2E agent probes.
 #[derive(Clone, Debug, Default)]
 pub struct E2eProbePolicy {
     origins: HashMap<String, Vec<ApprovedPreview>>,
 }
 
+/// Response payload containing HTTP status and sanitized page HTML.
 pub struct ProbePage {
     pub status: StatusCode,
     pub html: String,
 }
 
+/// Errors originating from E2E preview probe validation or network retrieval.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
     #[error("Security Error: E2E destination not authorized")]
@@ -76,6 +82,7 @@ pub enum ProbeError {
 }
 
 impl E2eProbePolicy {
+    /// Parses and strictly validates repository preview permissions from JSON.
     pub fn from_json(json: &str) -> Result<Self> {
         let raw: HashMap<String, Vec<ApprovedPreview>> = serde_json::from_str(json)
             .map_err(|error| AppError::Config(format!("Invalid E2E_ALLOWED_PREVIEWS: {error}")))?;
@@ -124,6 +131,7 @@ impl E2eProbePolicy {
         Ok(Self { origins })
     }
 
+    /// Executes a security-validated and pinned GET probe against an approved preview origin.
     pub async fn fetch(
         &self,
         repo: &str,
@@ -322,6 +330,8 @@ mod tests {
             "::1",
             "::ffff:127.0.0.1",
             "fe80::1",
+            "fec0::1",
+            "3fff::1",
             "fc00::1",
         ] {
             assert!(!is_public_address(address.parse().unwrap()), "{address}");
